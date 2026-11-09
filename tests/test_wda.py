@@ -4,10 +4,12 @@ No iPhone needed: a mock WebDriverAgent server runs on 127.0.0.1 and pymobiledev
 calls are replaced by fakes. Run:  python tests/test_wda.py
 """
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import plistlib
 import re
 import socket
 import subprocess
@@ -16,6 +18,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -561,38 +564,50 @@ def _zip_bytes(entries):
     return buf.getvalue()
 
 
-class FakeResponse(io.BytesIO):
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc):
-        self.close()
-
-
 class UsbTests(unittest.TestCase):
     APP = "build/Release-iphoneos/WebDriverAgentRunner-Runner.app/"
+    PAYLOAD = "Payload/WebDriverAgentRunner-Runner.app/"
+    EXE = "WebDriverAgentRunner-Runner"
 
-    def download(self, data, dest):
-        seen = []
+    def download(self, data, dest, digest=None):
+        with (
+            mock.patch("urllib.request.urlopen", side_effect=lambda *args, **kwargs: io.BytesIO(data)),
+            mock.patch.object(usb, "WDA_RELEASE_SHA256", digest or hashlib.sha256(data).hexdigest()),
+        ):
+            return usb.download_wda_ipa(dest, progress=lambda m: None)
 
-        def fake_urlopen(req, timeout=None):
-            seen.append(getattr(req, "full_url", req))
-            return FakeResponse(data)
-
-        with mock.patch("urllib.request.urlopen", fake_urlopen):
-            path = usb.download_wda_ipa(dest, progress=lambda m: None)
-        self.assertEqual(seen, [usb.WDA_RELEASE_URL])
-        return path
+    def app_entries(self):
+        plist = plistlib.dumps({
+            "CFBundleExecutable": self.EXE,
+            "CFBundleIdentifier": "com.facebook.WebDriverAgentRunner.xctrunner",
+        })
+        return [
+            (self.APP, None, 0o40755),
+            (self.APP + "Info.plist", plist, 0o100644),
+            (self.APP + self.EXE, b"\xcf\xfa\xed\xfe binary", 0o100755),
+        ]
 
     def test_download_wda_ipa_repackages_app(self):
         app = self.APP
-        data = _zip_bytes([
+        xctest = "PlugIns/WebDriverAgentRunner.xctest/"
+        framework = "Frameworks/Test.framework/"
+        debug = "PlugIns/WebDriverAgentRunner.xctest.dSYM/"
+        data = _zip_bytes(self.app_entries() + [
             ("build/", None, None),
-            (app, None, 0o40755),
-            (app + "Info.plist", b"<plist/>", 0o100644),
-            (app + "WebDriverAgentRunner-Runner", b"\xcf\xfa\xed\xfe binary", 0o100755),
-            (app + "PlugIns/WebDriverAgentRunner.xctest/Info.plist", b"<xctest/>", 0o100644),
+            (app + xctest, None, 0o40755),
+            (app + xctest + "Info.plist", plistlib.dumps({"CFBundleExecutable": "WebDriverAgentRunner"}), 0o100644),
+            (app + xctest + "WebDriverAgentRunner", b"XCTest binary", 0o100755),
+            (app + "Frameworks/", None, 0o40755),
+            (app + framework + "Test", b"Framework binary", 0o100755),
+            (app + framework + "Current", b"Test", 0o120777),
+            (app + "Resources/debug.dSYM.txt", b"ordinary resource", None),
+            (app + debug, None, 0o40755),
+            (app + debug + "Contents/Info.plist", b"debug plist", None),
+            (app + debug + "Contents/Resources/DWARF/WebDriverAgentRunner", b"debug binary", None),
+            (app + framework + "nested/Framework.DsYm/Contents/Resources/DWARF/Test", b"debug binary", None),
             (app + ".DS_Store", b"junk", None),
+            (app + xctest + "._Info.plist", b"resource fork", None),
+            (app + "__MACOSX/resources/junk", b"metadata", None),
             ("build/README.txt", b"not part of the app", None),
             ("__MACOSX/" + app + "._Info.plist", b"resource fork", None),
         ])
@@ -602,16 +617,106 @@ class UsbTests(unittest.TestCase):
             self.assertEqual(path, dest)
             self.assertEqual(sorted(p.name for p in dest.parent.iterdir()), ["WebDriverAgentRunner.ipa"])
             with zipfile.ZipFile(path) as ipa:
-                names = sorted(ipa.namelist())
-                self.assertEqual(names, [
-                    "Payload/WebDriverAgentRunner-Runner.app/Info.plist",
-                    "Payload/WebDriverAgentRunner-Runner.app/PlugIns/WebDriverAgentRunner.xctest/Info.plist",
-                    "Payload/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner",
-                ])
-                exe = ipa.getinfo("Payload/WebDriverAgentRunner-Runner.app/WebDriverAgentRunner-Runner")
+                self.assertIsNone(ipa.testzip())
+                self.assertEqual(set(ipa.namelist()), {self.PAYLOAD + n for n in (
+                    "", "Info.plist", self.EXE, xctest, xctest + "Info.plist",
+                    xctest + "WebDriverAgentRunner", "Frameworks/", framework + "Test",
+                    framework + "Current", "Resources/debug.dSYM.txt",
+                )})
+                exe = ipa.getinfo(self.PAYLOAD + self.EXE)
                 self.assertEqual(ipa.read(exe), b"\xcf\xfa\xed\xfe binary")
                 self.assertEqual(exe.create_system, 3)
                 self.assertEqual((exe.external_attr >> 16) & 0o777, 0o755)  # still executable
+                self.assertEqual(exe.date_time, (2024, 1, 2, 3, 4, 6))
+                self.assertEqual(ipa.read(self.PAYLOAD + xctest + "WebDriverAgentRunner"), b"XCTest binary")
+                link = ipa.getinfo(self.PAYLOAD + framework + "Current")
+                self.assertEqual(link.external_attr >> 16, 0o120777)
+                self.assertEqual(ipa.read(link), b"Test")
+
+    def test_download_rejects_unsafe_paths(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "WDA.ipa"
+            for name in ("../unsafe", "/absolute", "C:/drive", self.APP + "../escape",
+                         self.APP + "./file", self.APP + "a//b", self.APP + "file:stream"):
+                with self.subTest(name=name), self.assertRaisesRegex(usb.UsbError, "Unsafe path"):
+                    self.download(_zip_bytes(self.app_entries() + [(name, b"bad", None)]), dest)
+            for marker in (b"\\", b"\0"):
+                data = _zip_bytes(self.app_entries() + [(self.APP + "unsafe_path", b"bad", None)])
+                with self.subTest(marker=marker), self.assertRaisesRegex(usb.UsbError, "Unsafe path"):
+                    self.download(data.replace(b"unsafe_path", b"unsafe" + marker + b"path"), dest)
+            with self.assertRaisesRegex(usb.UsbError, "Unsafe path"):
+                self.download(_zip_bytes(self.app_entries() + [(self.APP + "Escape", b"../../outside", 0o120777)]), dest)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_rejects_invalid_zip_or_digest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "WDA.ipa"
+            with self.assertRaisesRegex(usb.UsbError, "Could not package"):
+                self.download(b"not a ZIP", dest)
+            with self.assertRaisesRegex(usb.UsbError, "SHA-256"):
+                self.download(_zip_bytes(self.app_entries()), dest, digest="0" * 64)
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_download_retries_gateway_error_via_release_url(self):
+        data = _zip_bytes(self.app_entries())
+        error = urllib.error.HTTPError(usb.WDA_RELEASE_ASSET_URL, 504, "Gateway Timeout", {}, None)
+        progress = []
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "urllib.request.urlopen", side_effect=[error, io.BytesIO(data)]
+        ) as urlopen, mock.patch.object(usb, "WDA_RELEASE_SHA256", hashlib.sha256(data).hexdigest()):
+            dest = Path(tmp) / "WDA.ipa"
+            self.assertEqual(usb.download_wda_ipa(dest, progress.append), dest)
+            with zipfile.ZipFile(dest) as ipa:
+                self.assertIsNone(ipa.testzip())
+                self.assertIn(self.PAYLOAD + self.EXE, ipa.namelist())
+        requests = [call.args[0] for call in urlopen.call_args_list]
+        self.assertEqual([req.full_url for req in requests], [usb.WDA_RELEASE_ASSET_URL, usb.WDA_RELEASE_URL])
+        self.assertEqual(requests[0].get_header("Accept"), "application/octet-stream")
+        self.assertTrue(any("alternate" in message for message in progress))
+        self.assertFalse(any("HTTP 504" in message for message in progress))
+
+    def test_download_retries_when_api_returns_metadata_instead_of_the_asset(self):
+        data = _zip_bytes(self.app_entries())
+        with tempfile.TemporaryDirectory() as tmp, mock.patch(
+            "urllib.request.urlopen", side_effect=[io.BytesIO(b'{"id":648705675}'), io.BytesIO(data)]
+        ), mock.patch.object(usb, "WDA_RELEASE_SHA256", hashlib.sha256(data).hexdigest()):
+            dest = Path(tmp) / "WDA.ipa"
+            self.assertEqual(usb.download_wda_ipa(dest, progress=lambda m: None), dest)
+            with zipfile.ZipFile(dest) as ipa:
+                self.assertIsNone(ipa.testzip())
+
+    def test_download_rejects_wrong_digest_from_fallback(self):
+        data = _zip_bytes(self.app_entries())
+        error = urllib.error.HTTPError(usb.WDA_RELEASE_ASSET_URL, 504, "Gateway Timeout", {}, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "WDA.ipa"
+            original = self.download(data, dest).read_bytes()
+            with mock.patch("urllib.request.urlopen", side_effect=[error, io.BytesIO(b"unverified content")]):
+                with self.assertRaisesRegex(usb.UsbError, "HTTP 504.*SHA-256"):
+                    usb.download_wda_ipa(dest, progress=lambda m: None)
+            self.assertEqual(dest.read_bytes(), original)
+
+    def test_download_rejects_ambiguous_bundle_or_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "WDA.ipa"
+            with self.assertRaisesRegex(usb.UsbError, "expected one outer .app"):
+                self.download(_zip_bytes(self.app_entries() + [("Other.app/Info.plist", b"other", None)]), dest)
+            with self.assertRaisesRegex(usb.UsbError, "Duplicate path"):
+                self.download(_zip_bytes(self.app_entries() + [(self.APP + "info.plist", b"duplicate", None)]), dest)
+
+    def test_failed_packaging_preserves_existing_ipa(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "WDA.ipa"
+            original = self.download(_zip_bytes(self.app_entries()), dest).read_bytes()
+            for data, error in (
+                (_zip_bytes(self.app_entries()[:-1]), "executable"),
+                (_zip_bytes([(self.APP + self.EXE, b"binary", None)]), "Info.plist"),
+                (_zip_bytes(self.app_entries()).replace(b"\xcf\xfa\xed\xfe binary", b"\xcf\xfa\xed\xfe BROKEN"), "CRC"),
+            ):
+                with self.subTest(error=error), self.assertRaisesRegex(usb.UsbError, error):
+                    self.download(data, dest)
+                self.assertEqual(dest.read_bytes(), original)
+                self.assertEqual(list(Path(tmp).iterdir()), [dest])
 
     def test_download_without_app_bundle_fails(self):
         data = _zip_bytes([("readme.txt", b"hello", None)])

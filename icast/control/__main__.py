@@ -191,7 +191,7 @@ def cmd_get_wda(args):
     except OSError as e:
         fail("Could not save WebDriverAgentRunner.ipa", f"{e.filename or ''} {describe_error(e)}")
         return 1
-    ok(f"WebDriverAgent saved as {path}")
+    ok(f"Validated IPA saved as {path}")
     say()
     say("Next steps:")
     say("  1. Install Sideloadly (https://sideloadly.io) on this PC.")

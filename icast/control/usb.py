@@ -8,19 +8,26 @@ Steps (each is a pymobiledevice3 CLI call, run in the background without a conso
      (iOS 17.4+: through a userspace tunnel, no admin rights needed)
   5. forward a local TCP port to WDA's port 8100 on the phone
 """
+import hashlib
 import io
 import json
 import logging
 import os
+import plistlib
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
 import urllib.request
 import zipfile
+import zlib
+from http.client import HTTPException
 from pathlib import Path
+from xml.parsers.expat import ExpatError
 
 from ..config import APP_DIR
 from .wda import WDA, WDAError, describe_error
@@ -28,7 +35,13 @@ from .wda import WDA, WDAError, describe_error
 log = logging.getLogger(__name__)
 
 WDA_PORT = 8100
-WDA_RELEASE_URL = "https://github.com/appium/WebDriverAgent/releases/latest/download/WebDriverAgentRunner-Runner.zip"
+WDA_RELEASE_TAG = "v16.15.3"
+WDA_RELEASE_URL = (
+    f"https://github.com/appium/WebDriverAgent/releases/download/{WDA_RELEASE_TAG}/WebDriverAgentRunner-Runner.zip"
+)
+# Update the tag, asset ID and digest together using the official release asset.
+WDA_RELEASE_ASSET_URL = "https://api.github.com/repos/appium/WebDriverAgent/releases/assets/648705675"
+WDA_RELEASE_SHA256 = "2176793538d902f6b1e61291e9997f68d306541f222ea715d256a7c6ce9d4fc5"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 USBMUXD_WINDOWS = ("127.0.0.1", 27015)  # Apple Mobile Device Service
 
@@ -503,61 +516,142 @@ def forward_args(local_port, udid):
 
 
 # ---------------------------------------------------------------------- WebDriverAgent download
+def _zip_path(name):
+    parts = tuple(name.removesuffix("/").split("/"))
+    if any(
+        not part or part in (".", "..") or part.endswith((".", " "))
+        or any(c in '\\:<>"|?*' or ord(c) < 32 for c in part)
+        for part in parts
+    ):
+        raise UsbError(f"Unsafe path in WebDriverAgent archive: {name!r}")
+    return parts
+
+
 def _ipa_member(name):
-    parts = name.split("/")
-    return not (
-        name.endswith("/")
-        or name.startswith(("/", "__MACOSX/"))
-        or ".." in parts
-        or parts[-1].startswith("._")
-        or parts[-1] == ".DS_Store"
-    )
+    """Return safe ZIP path components, or None for metadata and debug symbols."""
+    parts = _zip_path(name)
+    if any(
+        part in ("__macosx", ".ds_store") or part.startswith("._") or part.endswith(".dsym")
+        for part in map(str.casefold, parts)
+    ):
+        return None
+    return parts
+
+
+def _ipa_members(src):
+    root = None
+    members = {}
+    paths = {}
+    for info in src.infolist():
+        # zipfile can truncate NULs and normalize backslashes in filename.
+        parts = _ipa_member(info.orig_filename)
+        if parts is None:
+            continue
+        index = next((i for i, part in enumerate(parts) if part.casefold().endswith(".app")), None)
+        if index is None:
+            continue
+        bundle = parts[:index + 1]
+        if root is not None and bundle != root:
+            raise UsbError("Unexpected archive layout: expected one outer .app bundle from Appium")
+        root = bundle
+        relative = parts[index:]
+        name = "Payload/" + "/".join(relative) + ("/" if info.is_dir() else "")
+        key = tuple(part.casefold() for part in relative)
+        if key in paths:
+            raise UsbError(f"Duplicate path in WebDriverAgent archive: {name!r}")
+        paths[key] = info
+        members[name] = info
+    if root is None:
+        raise UsbError("Unexpected archive layout: no .app bundle from Appium")
+    for key in paths:
+        for length in range(1, len(key)):
+            parent = paths.get(key[:length])
+            if parent is not None and not parent.is_dir():
+                raise UsbError(f"File used as a directory in WebDriverAgent archive: {parent.filename!r}")
+    return "Payload/" + root[-1] + "/", members
+
+
+def _validate_ipa(path, app, members):
+    with zipfile.ZipFile(path) as ipa:
+        if sorted(ipa.namelist()) != sorted(members):
+            raise UsbError("IPA validation failed: unexpected bundle contents")
+        bad_file = ipa.testzip()
+        if bad_file is not None:
+            raise UsbError(f"IPA validation failed: {bad_file!r} did not pass the ZIP integrity check")
+        try:
+            metadata = plistlib.loads(ipa.read(app + "Info.plist"))
+        except (KeyError, ValueError, ExpatError):
+            raise UsbError("IPA validation failed: missing or invalid application Info.plist") from None
+        executable = metadata.get("CFBundleExecutable") if isinstance(metadata, dict) else None
+        identifier = metadata.get("CFBundleIdentifier") if isinstance(metadata, dict) else None
+        if not isinstance(identifier, str) or not identifier or not isinstance(executable, str) or not executable:
+            raise UsbError("IPA validation failed: Info.plist must identify the app and its executable")
+        if len(_zip_path(executable)) != 1 or app + executable not in members or members[app + executable].is_dir():
+            raise UsbError("IPA validation failed: the executable from Info.plist is missing or invalid")
+
+
+def _download_wda(url, progress):
+    sources = (WDA_RELEASE_ASSET_URL, url) if url == WDA_RELEASE_URL else (url,)
+    pinned = url in (WDA_RELEASE_URL, WDA_RELEASE_ASSET_URL)
+    errors = []
+    for source in sources:
+        if errors:
+            progress("Trying the alternate GitHub download for the pinned release...")
+        progress(f"Downloading {source}")
+        headers = {"User-Agent": "icast-windows"}
+        if source == WDA_RELEASE_ASSET_URL:
+            headers["Accept"] = "application/octet-stream"
+        req = urllib.request.Request(source, headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=25 if pinned else 120) as response:
+                data = response.read()
+        except urllib.error.HTTPError as e:
+            errors.append(f"HTTP {e.code}")
+            e.close()
+        except urllib.error.URLError as e:
+            reason = describe_error(e.reason) if isinstance(e.reason, OSError) else str(e.reason)
+            errors.append(reason)
+        except (OSError, HTTPException) as e:
+            errors.append(describe_error(e))
+        else:
+            if pinned and hashlib.sha256(data).hexdigest() != WDA_RELEASE_SHA256:
+                errors.append("SHA-256 mismatch for the pinned release. Retry or update iCast.")
+                continue
+            return data
+    raise UsbError("Download failed: " + " / ".join(errors))
 
 
 def download_wda_ipa(dest: Path = None, progress=print, url: str = WDA_RELEASE_URL) -> Path:
     """Fetch Appium's unsigned real-device WDA build and repackage it as an .ipa
     (Payload/<name>.app/...), ready to be signed and installed with Sideloadly."""
     dest = Path(dest) if dest else Path.home() / "Downloads" / "WebDriverAgentRunner.ipa"
-    progress(f"Downloading {url}")
-    req = urllib.request.Request(url, headers={"User-Agent": "icast-windows"})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as r:
-            data = r.read()
-    except urllib.error.HTTPError as e:
-        raise UsbError(f"Download failed: HTTP {e.code}") from None
-    except urllib.error.URLError as e:
-        reason = describe_error(e.reason) if isinstance(e.reason, OSError) else str(e.reason)
-        raise UsbError(f"Download failed: {reason}") from None
-    except OSError as e:
-        raise UsbError(f"Download failed: {describe_error(e)}") from None
+    data = _download_wda(url, progress)
     progress(f"Downloaded {len(data) / 1e6:.1f} MB, building the .ipa...")
     try:
-        src = zipfile.ZipFile(io.BytesIO(data))
-    except zipfile.BadZipFile:
-        raise UsbError("The download is not a zip archive") from None
-    with src:
-        names = [n for n in src.namelist() if _ipa_member(n)]
-        roots = sorted({n[: n.find(".app/") + 5] for n in names if ".app/" in n}, key=len)
-        if not roots:
-            raise UsbError("Unexpected archive layout: no .app bundle inside")
-        app_root = roots[0]  # outermost bundle, e.g. "WebDriverAgentRunner-Runner.app/"
-        prefix = app_root[: app_root.rstrip("/").rfind("/") + 1]  # folder containing the .app
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_name(dest.name + ".part")
-        try:
-            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as ipa:
-                for n in names:
-                    if not n.startswith(app_root):
-                        continue
-                    info = src.getinfo(n)
-                    zi = zipfile.ZipInfo("Payload/" + n[len(prefix):], info.date_time)
-                    zi.create_system = info.create_system  # keep unix modes (executables, symlinks)
-                    zi.external_attr = info.external_attr
-                    zi.compress_type = zipfile.ZIP_DEFLATED
-                    ipa.writestr(zi, src.read(n))
-            os.replace(tmp, dest)
-        except BaseException:
-            tmp.unlink(missing_ok=True)
-            raise
-    progress(f"Saved {dest}")
+        with zipfile.ZipFile(io.BytesIO(data)) as src:
+            app, members = _ipa_members(src)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=dest.parent) as staging:
+                tmp = Path(staging) / dest.name
+                with zipfile.ZipFile(tmp, "w") as ipa:
+                    for name, info in members.items():
+                        content = src.read(info)
+                        if info.is_dir() and content:
+                            raise UsbError(f"Unexpected data in ZIP directory: {info.filename!r}")
+                        if stat.S_ISLNK(info.external_attr >> 16):
+                            # A link may point down into the bundle (e.g. Versions/Current).
+                            # Never pass absolute or parent-relative links to the signing tool.
+                            _zip_path(content.decode("utf-8"))
+                        zi = zipfile.ZipInfo(name, info.date_time)
+                        zi.create_system = info.create_system
+                        zi.external_attr = info.external_attr
+                        zi.internal_attr = info.internal_attr
+                        zi.comment = info.comment
+                        zi.compress_type = zipfile.ZIP_STORED if info.is_dir() else zipfile.ZIP_DEFLATED
+                        ipa.writestr(zi, content)
+                progress("Checking the IPA layout and ZIP integrity...")
+                _validate_ipa(tmp, app, members)
+                os.replace(tmp, dest)
+    except (zipfile.BadZipFile, RuntimeError, UnicodeError, zlib.error) as e:
+        raise UsbError(f"Could not package the WebDriverAgent ZIP: {e}. Download it again or update iCast.") from None
     return dest

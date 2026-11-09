@@ -185,11 +185,17 @@ environment).
    control.bat get-wda
    ```
 
-   It downloads Appium's prebuilt WebDriverAgent and saves it as
-   `WebDriverAgentRunner.ipa` in your `Downloads` folder.
+   It downloads a pinned [Appium WebDriverAgent release](https://github.com/appium/WebDriverAgent/releases/tag/v16.15.3),
+   checks the download against its official SHA-256 digest, and saves
+   `WebDriverAgentRunner.ipa` in your `Downloads` folder. iCast tries GitHub's asset API
+   first and can retry via the direct link for the same release. iCast removes `.dSYM` debug
+   bundles because Sideloadly may try to sign their DWARF binaries. The IPA keeps the
+   XCTest runner and frameworks, so you can give it to Sideloadly without editing it.
 4. **Install it on the iPhone.** Open [Sideloadly](https://sideloadly.io), select the iPhone
    and `WebDriverAgentRunner.ipa`, enter your Apple ID and start. Sideloadly signs the app
-   with your Apple ID and installs it. With a **free** Apple ID the signature is valid for
+   with your Apple ID and installs it. ZIP validation checks the package structure and
+   integrity. Signing still depends on a compatible WDA build, Sideloadly, and Apple's
+   signing requirements. With a **free** Apple ID the signature is valid for
    **7 days**: after that, install it again with Sideloadly (paid developer accounts last a
    year).
 5. **Trust the developer profile.** On the iPhone go to Settings > General >
