@@ -340,8 +340,11 @@ folder.
 rem FairPlay known-answer tests (21 recorded sessions)
 python tests/test_fairplay.py
 
-rem WebDriverAgent client tests
+rem WebDriverAgent control and IPA packaging tests
 python tests/test_wda.py
+
+rem AirPlay shutdown, video sessions, and settings tests
+python tests/test_lifecycle.py
 
 rem Full AirPlay session without an iPhone or a network:
 rem the receiver listens on 127.0.0.1:7100 only and does not announce itself

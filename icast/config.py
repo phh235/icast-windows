@@ -4,6 +4,7 @@ import logging
 import os
 import secrets
 import socket
+import tempfile
 from pathlib import Path
 
 log = logging.getLogger(__name__)
@@ -36,11 +37,20 @@ DEFAULTS = {
 }
 
 
+def _valid_hex(value, size):
+    if not isinstance(value, str) or len(value) != size * 2:
+        return False
+    try:
+        return len(bytes.fromhex(value)) == size
+    except ValueError:
+        return False
+
+
 class Settings:
     def __init__(self, path: Path = SETTINGS_FILE, default_name: str = ""):
         self.path = path
         self.data = dict(DEFAULTS, name=default_name)
-        APP_DIR.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             try:
                 self.data.update(json.loads(path.read_text(encoding="utf-8")))
@@ -50,12 +60,12 @@ class Settings:
         if not self.data.get("name"):
             self.data["name"] = socket.gethostname() or "Windows PC"
             changed = True
-        if not self.data.get("mac"):
+        if not _valid_hex(self.data.get("mac"), 6):
             mac = bytearray(secrets.token_bytes(6))
             mac[0] = (mac[0] | 0x02) & 0xFE  # locally administered, unicast
             self.data["mac"] = mac.hex()
             changed = True
-        if not self.data.get("ed25519_seed"):
+        if not _valid_hex(self.data.get("ed25519_seed"), 32):
             self.data["ed25519_seed"] = secrets.token_hex(32)
             changed = True
         if changed:
@@ -72,7 +82,11 @@ class Settings:
 
     def save(self):
         try:
-            self.path.write_text(json.dumps(self.data, indent=2, ensure_ascii=False), encoding="utf-8")
+            with tempfile.TemporaryDirectory(dir=self.path.parent) as staging:
+                tmp = Path(staging) / self.path.name
+                with tmp.open("w", encoding="utf-8") as file:
+                    json.dump(self.data, file, indent=2, ensure_ascii=False)
+                os.replace(tmp, self.path)
         except Exception as e:
             log.warning("could not save settings: %s", e)
 

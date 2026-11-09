@@ -1,7 +1,9 @@
-"""Regression tests for ending a mirror session."""
+"""Regression tests for ending a mirror session and preserving settings."""
 import asyncio
+import json
 import plistlib
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -13,6 +15,7 @@ import av
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from icast.airplay import Connection, Receiver, Response  # noqa: E402
+from icast.config import Settings  # noqa: E402
 from icast.video import MirrorStream, VideoDecoder  # noqa: E402
 
 
@@ -96,6 +99,37 @@ class VideoLifecycleTests(unittest.IsolatedAsyncioTestCase):
         decoder.stop()
         decoder.join(3)
         self.assertFalse(decoder.is_alive())
+
+
+class SettingsTests(unittest.TestCase):
+    def test_failed_write_preserves_existing_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            settings = Settings(path)
+            original = path.read_bytes()
+            settings["name"] = "Pending name"
+
+            def partial_dump(data, file, **kwargs):
+                file.write('{"name":')
+                raise OSError("simulated interrupted write")
+
+            with mock.patch("icast.config.json.dump", side_effect=partial_dump):
+                with self.assertLogs("icast.config", level="WARNING"):
+                    settings.save()
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+            settings.save()
+            self.assertEqual(Settings(path)["name"], "Pending name")
+
+    def test_replaces_invalid_identity_but_retains_other_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text(json.dumps({"name": "My receiver", "mac": "bad", "ed25519_seed": 1}), encoding="utf-8")
+            settings = Settings(path)
+            self.assertEqual(settings["name"], "My receiver")
+            self.assertEqual(len(settings.mac_bytes), 6)
+            self.assertEqual(len(bytes.fromhex(settings["ed25519_seed"])), 32)
+            self.assertEqual(Settings(path).data, settings.data)
 
 
 class ReceiverShutdownTests(unittest.TestCase):
