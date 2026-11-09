@@ -2,10 +2,10 @@
 import asyncio
 import hashlib
 import logging
-import queue
 import struct
 import threading
-import time
+from collections import deque
+from contextlib import suppress
 
 import av
 from av.video.reformatter import VideoReformatter
@@ -46,28 +46,52 @@ def avcc_to_annexb(data: bytes):
 class VideoDecoder(threading.Thread):
     """Decodes Annex-B access units; hands the newest BGRA VideoFrame to on_frame."""
 
+    MAX_PENDING = 240
+
     def __init__(self, on_frame):
         super().__init__(name="video-decoder", daemon=True)
         self.on_frame = on_frame
-        self.q = queue.Queue(maxsize=240)
+        self._pending = deque()
         self.target = None  # (w, h) in device pixels, set by the UI
         self.last_frame = None  # full-resolution av.VideoFrame (for screenshots)
-        self._codec = None
         self._reformatter = VideoReformatter()
-        self._stop = False
+        self._condition = threading.Condition()
+        self._session = None
+        self._stopping = False
 
-    def submit(self, data: bytes):
-        try:
-            self.q.put_nowait(data)
-        except queue.Full:
-            log.warning("decoder queue full, dropping frame")
+    def submit(self, session, data: bytes):
+        with self._condition:
+            if session is None or session is not self._session:
+                return
+            if len(self._pending) >= self.MAX_PENDING:
+                log.warning("decoder queue full, dropping frame")
+                return
+            self._pending.append(data)
+            self._condition.notify()
+
+    def _set_session(self, session):
+        self._session = session
+        self._pending.clear()
+        self.last_frame = None
 
     def reset(self):
-        self.submit(None)
+        with self._condition:
+            if not self._stopping:
+                self._set_session(object())
+                return self._session
+
+    def end(self, session):
+        with self._condition:
+            if session is None or session is not self._session:
+                return False
+            self._set_session(None)
+            return True
 
     def stop(self):
-        self._stop = True
-        self.submit(b"")
+        with self._condition:
+            self._stopping = True
+            self._set_session(None)
+            self._condition.notify()
 
     def _new_codec(self):
         c = av.CodecContext.create("h264", "r")
@@ -79,37 +103,40 @@ class VideoDecoder(threading.Thread):
         return c
 
     def run(self):
-        while not self._stop:
-            data = self.q.get()
-            if self._stop:
-                break
-            if data is None:
-                self._codec = None
-                continue
-            if self._codec is None:
-                self._codec = self._new_codec()
+        codec_session = None
+        while True:
+            with self._condition:
+                self._condition.wait_for(lambda: self._pending or self._stopping)
+                if self._stopping:
+                    return
+                session, data = self._session, self._pending.popleft()
+            if session is not codec_session:
+                codec = self._new_codec()
+                codec_session = session
             try:
-                frames = self._codec.decode(av.Packet(data))
+                frames = codec.decode(av.Packet(data))
             except av.error.FFmpegError as e:
                 log.debug("decode error: %s", e)
                 continue
-            if not frames or not self.q.empty():
+            if not frames or self._pending:
                 continue  # behind: skip conversion, keep decoding references
             frame = frames[-1]
             try:
-                self._deliver(frame)
+                self._deliver(session, frame)
             except Exception:
                 log.exception("frame conversion failed")
 
-    def _deliver(self, frame):
-        self.last_frame = frame
+    def _deliver(self, session, frame):
         tw, th = self.target or (frame.width, frame.height)
         tw, th = max(16, int(tw)), max(16, int(th))
         # keep the source aspect if the UI has not adapted yet
         if abs(tw / th - frame.width / frame.height) > 0.02:
             th = max(16, round(tw * frame.height / frame.width))
         img = self._reformatter.reformat(frame, width=tw, height=th, format="bgra", interpolation="AREA")
-        self.on_frame(img, frame.width, frame.height)
+        with self._condition:
+            if session is self._session:
+                self.last_frame = frame
+                self.on_frame(img, frame.width, frame.height)
 
 
 class MirrorStream:
@@ -120,29 +147,41 @@ class MirrorStream:
         self.decoder = decoder
         self.events = events  # callable(event: str, **info)
         self.server = None
-        self.port = 0
         self._sps_pps = None
         self._checked = False
-        self._bad = 0
         self._task = None
-        self.frames = 0
+        self._session = decoder.reset()
+        self._closed = False
 
     async def start(self) -> int:
         self.server = await asyncio.start_server(self._handle, host=net.BIND_HOST, port=0)
-        self.port = self.server.sockets[0].getsockname()[1]
-        log.info("mirror data port %d", self.port)
-        return self.port
+        port = self.server.sockets[0].getsockname()[1]
+        log.info("mirror data port %d", port)
+        return port
 
     async def stop(self):
+        self._closed = True
         if self.server:
             self.server.close()
             self.server = None
+        self._end()
         if self._task:
-            self._task.cancel()
-            self._task = None
+            task = self._task
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    def _end(self):
+        session, self._session = self._session, None
+        if session is not None and self.decoder.end(session):
+            self.events("mirror_stopped")
 
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        if self._closed or self._task is not None:
+            writer.close()
+            return
         self._task = asyncio.current_task()
+        if self._session is None:
+            self._session = self.decoder.reset()
         peer = writer.get_extra_info("peername")
         log.info("mirror stream connected from %s", peer)
         sock = writer.get_extra_info("socket")
@@ -151,7 +190,6 @@ class MirrorStream:
             sock.setsockopt(_s.SOL_SOCKET, _s.SO_RCVBUF, 4 * 1024 * 1024)
         except Exception:
             pass
-        self.decoder.reset()
         try:
             while True:
                 hdr = await reader.readexactly(128)
@@ -166,7 +204,12 @@ class MirrorStream:
             log.exception("mirror stream error")
         finally:
             writer.close()
-            self.events("mirror_stopped")
+            try:
+                self._end()
+                with suppress(OSError):
+                    await writer.wait_closed()
+            finally:
+                self._task = None
 
     def _packet(self, hdr: bytes, payload: bytes):
         ptype = hdr[4]
@@ -174,7 +217,6 @@ class MirrorStream:
             dec = self.decryptor.update(payload)
             nal = avcc_to_annexb(dec)
             if nal is None:
-                self._bad += 1
                 if not self._checked:
                     self._checked = True
                     log.error("first video packet failed to decrypt into valid H.264 (key mismatch?)")
@@ -186,8 +228,7 @@ class MirrorStream:
             if self._sps_pps:
                 nal = self._sps_pps + nal
                 self._sps_pps = None
-            self.frames += 1
-            self.decoder.submit(nal)
+            self.decoder.submit(self._session, nal)
         elif ptype == 1:  # unencrypted codec config (SPS + PPS)
             if payload[4:8] == b"hvc1":
                 log.error("client sent H.265, which is not supported")

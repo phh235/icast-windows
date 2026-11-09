@@ -6,6 +6,8 @@ import plistlib
 import struct
 import threading
 import time
+from concurrent.futures import Future, InvalidStateError
+from contextlib import suppress
 
 from . import discovery, net
 from .audio import AudioStream, Player
@@ -17,6 +19,7 @@ log = logging.getLogger(__name__)
 
 SERVER = f"AirTunes/{discovery.SRCVERS}"
 NTP_EPOCH = 2208988800
+RTSP_CLOSE_TIMEOUT = 0.5
 
 
 def _bplist(obj) -> bytes:
@@ -117,8 +120,19 @@ class Connection:
         except Exception:
             log.exception("connection error")
         finally:
-            await self.cleanup()
-            self.writer.close()
+            try:
+                await self.cleanup()
+            finally:
+                self.writer.close()
+                try:
+                    # A peer that has stopped reading can hold buffered replies open.
+                    async with asyncio.timeout(RTSP_CLOSE_TIMEOUT):
+                        await self.writer.wait_closed()
+                except OSError:
+                    self.writer.transport.abort()
+                except asyncio.CancelledError:
+                    self.writer.transport.abort()
+                    raise
             log.info("connection from %s closed", self.remote_ip)
 
     async def _read_request(self):
@@ -300,11 +314,12 @@ class Connection:
                 stype = s.get("type")
                 if stype == 110:
                     sid = int(s.get("streamConnectionID", 0)) & 0xFFFFFFFFFFFFFFFF
-                    await rx.claim_mirror(self)
-                    if self.mirror:
-                        await self.mirror.stop()
-                    self.mirror = MirrorStream(self.aeskey, sid, rx.decoder, rx.emit)
-                    port = await self.mirror.start()
+                    async with rx._mirror_lock:
+                        await rx.claim_mirror(self)
+                        if self.mirror:
+                            await self.mirror.stop()
+                        self.mirror = MirrorStream(self.aeskey, sid, rx.decoder, rx.emit)
+                        port = await self.mirror.start()
                     res_streams.append({"dataPort": port, "type": 110})
                 elif stype == 96:
                     if self.audio:
@@ -348,7 +363,6 @@ class Connection:
         if 110 in types and self.mirror:
             await self.mirror.stop()
             self.mirror = None
-            self.rx.emit("mirror_stopped")
         if not types:
             await self.cleanup()
             resp.close = True
@@ -357,7 +371,6 @@ class Connection:
         if self.audio:
             self.audio.stop()
             self.audio = None
-        had_mirror = self.mirror is not None
         if self.mirror:
             await self.mirror.stop()
             self.mirror = None
@@ -365,8 +378,6 @@ class Connection:
             self.timing.stop()
             self.timing = None
         self.rx.release_mirror(self)
-        if had_mirror:
-            self.rx.emit("mirror_stopped")
 
 
 class Receiver:
@@ -385,8 +396,11 @@ class Receiver:
         self.port = 0
         self.advertiser = None
         self._mirror_owner = None
+        self._mirror_lock = asyncio.Lock()
         self._thread = None
         self._server = None
+        self._shutdown = Future()  # signaled by the GUI thread, awaited on the receiver loop
+        self._advertiser_lock = threading.Lock()
 
     def emit(self, event, **info):
         try:
@@ -437,17 +451,44 @@ class Receiver:
         self._thread.start()
 
     def _run(self):
-        self.loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self.loop)
         try:
-            self.loop.run_until_complete(self._main())
-            self.loop.run_forever()
+            asyncio.run(self._serve())
         except Exception:
             log.exception("receiver crashed")
             self.emit("error", message="The AirPlay server crashed. See the log for details.")
 
+    async def _serve(self):
+        self.loop = asyncio.get_running_loop()
+        try:
+            if not self._shutdown.done():
+                await self._main()
+                await asyncio.wrap_future(self._shutdown)
+        finally:
+            self._shutdown.cancel()
+            if self._server:
+                self._server.close()
+            # RTSP, mirror and timing tasks all belong to this receiver's loop.
+            tasks = asyncio.all_tasks() - {asyncio.current_task()}
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            if self._server:
+                await self._server.wait_closed()
+            if self.player:
+                self.player.close()
+            if self.advertiser:
+                try:
+                    await asyncio.to_thread(self._advertise, restart=False)
+                except Exception:
+                    log.exception("could not stop mDNS advertisement")
+
     async def _main(self):
-        handler = lambda r, w: Connection(self, r, w).serve()  # noqa: E731
+        async def handler(reader, writer):
+            if self._shutdown.done():
+                writer.close()
+                return
+            await Connection(self, reader, writer).serve()
+
         try:
             self._server = await asyncio.start_server(handler, host=net.BIND_HOST, port=net.PORT)
         except OSError:
@@ -459,46 +500,43 @@ class Receiver:
             return
         self.advertiser = discovery.Advertiser(self.settings, self.pk_hex, self.port)
         try:
-            await self.loop.run_in_executor(None, self.advertiser.start)
+            await asyncio.to_thread(self._advertise)
         except Exception:
             log.exception("mDNS advertisement failed")
             self.emit("error", message="Could not announce this PC on the network (mDNS).")
             return
         self.emit("listening", name=self.settings["name"], addresses=self.advertiser.addresses, port=self.port)
 
+    def _advertise(self, restart=True):
+        with self._advertiser_lock:
+            self.advertiser.stop()
+            if restart and not self._shutdown.done():
+                self.advertiser.start()
+                return True
+        return False
+
     def rename(self, name: str):
         """Change the name shown on the iPhone and re-announce the receiver."""
         self.settings["name"] = name
         self.settings.save()
-        if not self.loop or not self.advertiser:
+        if not self.loop or not self.advertiser or self._shutdown.done():
             return
 
         def reannounce():
             try:
-                self.advertiser.stop()
-                self.advertiser.start()
-                self.emit("listening", name=name, addresses=self.advertiser.addresses, port=self.port)
+                if self._advertise():
+                    self.emit("listening", name=name, addresses=self.advertiser.addresses, port=self.port)
             except Exception:
                 log.exception("re-announce failed")
 
-        self.loop.call_soon_threadsafe(lambda: self.loop.run_in_executor(None, reannounce))
+        with suppress(RuntimeError):  # the loop may close before this callback is queued
+            self.loop.call_soon_threadsafe(lambda: self.loop.run_in_executor(None, reannounce))
 
     def stop(self):
-        logging.getLogger("asyncio").setLevel(logging.CRITICAL)  # pending accept tasks at exit are harmless
-        if self.advertiser:
-            try:
-                self.advertiser.stop()
-            except Exception:
-                pass
-        if self.player:
-            self.player.close()
+        with suppress(InvalidStateError):
+            self._shutdown.set_result(None)
         self.decoder.stop()
-        if self.loop and self.loop.is_running():
-            async def shutdown():
-                if self._server:
-                    self._server.close()
-                self.loop.stop()
-
-            asyncio.run_coroutine_threadsafe(shutdown(), self.loop)
-            if self._thread:
-                self._thread.join(timeout=2)
+        if self._thread:
+            self._thread.join(timeout=2)
+        if self.decoder.ident is not None:
+            self.decoder.join(timeout=2)
