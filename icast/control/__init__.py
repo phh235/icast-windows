@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 OFF, STARTING, READY, ERROR = "off", "starting", "ready", "error"
 
 MSG_LOST = "Lost connection to WebDriverAgent. Enable control again."
+MSG_SWITCHER_ASSISTIVE = "App Switcher: use AssistiveTouch"
 
 SCROLL_PER_NOTCH = 0.12  # fraction of the screen height one wheel notch scrolls
 SCROLL_MAX_STEP = 0.45  # longest single drag, fraction of the height
@@ -190,7 +191,9 @@ class Controller:
             if cmd[0] == "swipe" and run.q.qsize() > 8:
                 continue  # falling behind: drop stale drags
             try:
-                self._execute(wda, *cmd)
+                hint = self._execute(wda, *cmd)
+                if hint:
+                    self._set(READY, hint, run)
             except WDAError as e:
                 if run.stop.is_set():
                     return
@@ -320,7 +323,8 @@ class Controller:
         elif kind == "home":
             wda.home()
         elif kind == "switcher":
-            wda.app_switcher()
+            if not wda.app_switcher():
+                return MSG_SWITCHER_ASSISTIVE
         elif kind == "button":
             wda.press_button(a[0])
         else:

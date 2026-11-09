@@ -213,11 +213,9 @@ class WDAClientTests(unittest.TestCase):
         self.assertEqual((steps[0]["x"], steps[0]["y"]), (100, 201))
         self.assertLess(steps[2]["duration"] + steps[4]["duration"] + steps[6]["duration"], 300)
 
-    def test_app_switcher_face_id_swipes_up_and_holds(self):
-        self.wda.app_switcher()
-        steps = self.mock.pointer_actions()[-1]["actions"]
-        self.assertEqual([s["type"] for s in steps], ["pointerMove", "pointerDown", "pointerMove", "pause", "pointerUp"])
-        self.assertEqual(steps[0]["y"], 842)  # from the bottom edge of 390x844
+    def test_app_switcher_face_id_sends_no_swipe(self):
+        self.assertFalse(self.wda.app_switcher())
+        self.assertFalse(self.mock.pointer_actions())
         self.assertFalse(self.mock.find("POST", "/wda/performIoHidEvent"))
 
     def test_app_switcher_home_button_double_presses_home(self):
@@ -360,6 +358,17 @@ class ControllerTests(unittest.TestCase):
         acts = wait_for(lambda: self.mock.pointer_actions()[before:], timeout)
         self.assertTrue(acts, "no pointer action was sent")
         return acts[0]["actions"]
+
+    def test_app_switcher_face_id_shows_hint_without_disabling_control(self):
+        ctrl = self.controller()
+        ctrl.start()
+        self.wait_state(ctrl, READY)
+        ctrl.app_switcher()
+        self.assertTrue(wait_for(lambda: (READY, control.MSG_SWITCHER_ASSISTIVE) in self.states))
+        self.assertFalse(self.mock.pointer_actions())
+        ctrl.tap(0.5, 0.5)
+        self.next_pointer_action(0)
+        self.assertEqual(ctrl.state, READY)
 
     def test_end_to_end(self):
         ctrl = self.controller()

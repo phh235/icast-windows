@@ -35,7 +35,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon, QToolTip, QWidget
 
 from .config import APP_NAME, LOG_FILE
-from .control import ERROR, OFF, READY, STARTING
+from .control import ERROR, MSG_SWITCHER_ASSISTIVE, OFF, READY, STARTING
 
 log = logging.getLogger(__name__)
 
@@ -341,7 +341,9 @@ class PhoneWindow(QWidget):
         if new_error:
             self._error_serial = serial
             self._show_control_error(self.control_message or "iPhone control failed.")
-        if changed or new_error:
+        if state == READY and message == MSG_SWITCHER_ASSISTIVE:
+            QToolTip.showText(self.mapToGlobal(self.phone_rect().topLeft().toPoint()), message, self)
+        elif changed or new_error:
             self._hint_text = ""  # the new control status replaces any older hint
             self._flash_bar()
         self._update_anim()
@@ -584,9 +586,6 @@ class PhoneWindow(QWidget):
         if status:
             labels.append(status)
         return labels
-
-    def _bar_label(self) -> str:
-        return self._bar_labels()[0]
 
     def _control_color(self) -> QColor:
         st = self.control_state

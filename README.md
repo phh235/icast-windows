@@ -119,15 +119,17 @@ line from its start to its end.
 | Shortcut | Action |
 |---|---|
 | Ctrl + H | Home |
-| Ctrl + J | App Switcher |
+| Ctrl + J | App Switcher on iPhones with a Home button |
 | Ctrl + Up / Ctrl + Down | iPhone volume up / down |
 | Ctrl + M | Mute / unmute the sound on the PC |
 | Ctrl + U | Turn USB control on / off |
 | Ctrl + Plus / Ctrl + Minus | Resize the window |
 
-Home, App Switcher and iPhone volume act on the phone, so they only do something while
-control is ready. App Switcher swipes up from the bottom edge and holds on iPhones with
-Face ID, and double-presses Home on iPhones with a Home button.
+Home, App Switcher and iPhone volume act on the phone while control is ready.
+Ctrl + J double-presses Home on iPhones with a Home button. On Face ID models,
+iCast shows an AssistiveTouch hint because a WDA swipe can scroll the current app.
+On those models, open App Switcher from
+[AssistiveTouch](https://support.apple.com/111794) or with the iPhone's bottom-edge gesture.
 
 Ctrl + mouse wheel resizes in proportion to how far the wheel turns (about 6% per notch), so
 smooth scrolling with a touchpad resizes smoothly too.
@@ -138,7 +140,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 |---|---|
 | Control iPhone (USB) | Turn control on or off (checkable) |
 | Home | Go to the Home Screen |
-| App Switcher | Open the App Switcher |
+| App Switcher | Double-press Home on iPhones with a Home button |
 | Volume Up / Volume Down | Change the iPhone volume |
 | Always on Top | Keep the window above other windows |
 | Sound | Play the iPhone sound on the PC |

@@ -249,12 +249,11 @@ class WDA:
         return max(w, h) / min(w, h) < HOME_BUTTON_MAX_ASPECT
 
     def app_switcher(self):
-        if self.has_home_button():
-            # no gesture for it there (a swipe up from the bottom opens Control Center)
-            self.double_press_home()
-            return
-        w, h = self.window_size()
-        self.swipe(w / 2, h - 2, w / 2, h * 0.62, duration_ms=280, hold_end_ms=450)
+        if not self.has_home_button():
+            # WDA's coordinate swipe can scroll the foreground app on Face ID models.
+            return False
+        self.double_press_home()
+        return True
 
     def double_press_home(self):
         """Press the Home button twice quickly (opens the App Switcher on Home-button iPhones)."""
