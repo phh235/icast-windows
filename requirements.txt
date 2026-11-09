@@ -1,0 +1,8 @@
+zeroconf
+cryptography
+av
+PySide6-Essentials
+numpy
+sounddevice
+pymobiledevice3>=11.50
+pywin32; sys_platform == "win32"

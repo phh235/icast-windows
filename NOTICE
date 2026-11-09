@@ -1,0 +1,12 @@
+iCast
+
+Copyright (C) 2026 phh235 for their contributions to this version.
+
+This version was modified on 2026-11-09. The changes include video frame
+delivery, video conversion, and window rendering.
+
+The application is distributed under the GNU General Public License,
+version 3. See LICENSE for the full license text.
+
+The FairPlay implementation includes a port of playfair. See
+licenses/playfair-LICENSE.md for its license and README.md for credits.
