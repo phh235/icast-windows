@@ -3,6 +3,7 @@ import asyncio
 import collections
 import logging
 import threading
+import time
 
 import av
 import numpy as np
@@ -13,6 +14,8 @@ from . import net
 log = logging.getLogger(__name__)
 
 RATE = 44100
+MAX_AUDIO_PACKET = 16 * 1024
+AUDIO_CONNECT_TIMEOUT = 15
 
 # codec configuration per AirPlay "ct" value
 CODECS = {
@@ -96,10 +99,13 @@ class Player:
 
 
 class _Proto(asyncio.DatagramProtocol):
-    def __init__(self, handler):
+    def __init__(self, handler, peer_ip):
         self.handler = handler
+        self.peer_ip = peer_ip
 
     def datagram_received(self, data, addr):
+        if addr[0] != self.peer_ip or len(data) > MAX_AUDIO_PACKET:
+            return
         try:
             self.handler(data)
         except Exception:
@@ -107,13 +113,17 @@ class _Proto(asyncio.DatagramProtocol):
 
 
 class AudioStream:
-    def __init__(self, aeskey: bytes, aesiv: bytes, ct: int, player: Player):
+    def __init__(self, aeskey: bytes, aesiv: bytes, ct: int, player: Player, *, peer_ip: str, on_end=None):
         self.key, self.iv = aeskey, aesiv
-        self.ct = ct
+        self.peer_ip = peer_ip
+        self.on_end = on_end
         self.player = player
         self.data_port = self.control_port = 0
         self._transports = []
+        self._offer_timer = None
+        self._offer_deadline = None
         self._last_seq = None
+        self.last_activity = None
         self._decoded = 0
         name, extradata = CODECS.get(ct, CODECS[8])
         self.codec = av.CodecContext.create(name, "r")
@@ -126,20 +136,38 @@ class AudioStream:
         self.resampler = av.AudioResampler(format="s16", layout="stereo", rate=RATE)
         log.info("audio stream ct=%d (%s)", ct, name)
 
-    async def start(self):
+    async def start(self, offer_deadline=None):
         loop = asyncio.get_running_loop()
-        t1, _ = await loop.create_datagram_endpoint(lambda: _Proto(self._data), local_addr=(net.BIND_HOST, 0))
-        t2, _ = await loop.create_datagram_endpoint(lambda: _Proto(self._control), local_addr=(net.BIND_HOST, 0))
-        self._transports = [t1, t2]
+        if offer_deadline is not None and offer_deadline <= loop.time():
+            raise ValueError("audio offer expired; reconnect to start audio")
+        t1, _ = await loop.create_datagram_endpoint(lambda: _Proto(self._data, self.peer_ip), local_addr=(net.BIND_HOST, 0))
+        self._transports.append(t1)
+        t2, _ = await loop.create_datagram_endpoint(lambda: _Proto(self._control, self.peer_ip), local_addr=(net.BIND_HOST, 0))
+        self._transports.append(t2)
         self.data_port = t1.get_extra_info("sockname")[1]
         self.control_port = t2.get_extra_info("sockname")[1]
+        self._offer_deadline = offer_deadline if offer_deadline is not None else loop.time() + AUDIO_CONNECT_TIMEOUT
+        if self.last_activity is None:
+            self._offer_timer = loop.call_at(self._offer_deadline, self._expire_offer)
         return self.data_port, self.control_port
 
+    @property
+    def pending_deadline(self):
+        return self._offer_deadline if self.last_activity is None else None
+
     def stop(self):
+        if self._offer_timer is not None:
+            self._offer_timer.cancel()
+            self._offer_timer = None
         for t in self._transports:
             t.close()
         self._transports = []
         self.player.flush()
+
+    def _expire_offer(self):
+        self.stop()
+        if self.on_end:
+            self.on_end(self)
 
     def flush(self):
         self._last_seq = None
@@ -150,14 +178,13 @@ class AudioStream:
             self._data(pkt[4:])
 
     def _data(self, pkt: bytes):
-        if len(pkt) < 12:
+        if len(pkt) <= 12:
             return
         seq = int.from_bytes(pkt[2:4], "big")
         if self._last_seq is not None:
             diff = (seq - self._last_seq) & 0xFFFF
             if diff == 0 or diff > 0x8000:  # duplicate or late
                 return
-        self._last_seq = seq
         payload = pkt[12:]
         n = len(payload) // 16 * 16
         dec = Cipher(algorithms.AES(self.key), modes.CBC(self.iv)).decryptor()
@@ -167,6 +194,12 @@ class AudioStream:
         except av.error.FFmpegError as e:
             log.debug("audio decode error: %s", e)
             return
+        if frames:
+            self._last_seq = seq
+            self.last_activity = time.monotonic()
+            if self._offer_timer is not None:
+                self._offer_timer.cancel()
+                self._offer_timer = None
         for f in frames:
             for r in self.resampler.resample(f):
                 pcm = r.to_ndarray().reshape(-1, 2)

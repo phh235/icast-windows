@@ -2,6 +2,7 @@
 import asyncio
 import hashlib
 import logging
+import math
 import plistlib
 import struct
 import threading
@@ -21,6 +22,8 @@ log = logging.getLogger(__name__)
 SERVER = f"AirTunes/{discovery.SRCVERS}"
 NTP_EPOCH = 2208988800
 RTSP_CLOSE_TIMEOUT = 0.5
+RTSP_HEADER_TIMEOUT = 15
+RTSP_MEDIA_IDLE_TIMEOUT = 120
 RTSP_BODY_LIMIT = 64 * 1024
 RTSP_CONNECTION_LIMIT = 8
 PLIST_PARSE_BUDGET = 4 * 1024 * 1024
@@ -122,6 +125,9 @@ class Connection:
         self.timing = None
         self.mirror = None
         self.audio = None
+        # Stream-only TEARDOWN and SETUP retries retain the original deadline until usable media arrives.
+        self._mirror_offer_deadline = None
+        self._audio_offer_deadline = None
         self.client_name = None
 
     # ---------------------------------------------------------------- I/O
@@ -159,8 +165,24 @@ class Connection:
             log.info("connection from %s closed", self.remote_ip)
 
     async def _read_request(self):
+        # Quiet control sockets are normal during playback. A partial request still has its own deadline.
+        timeout = RTSP_MEDIA_IDLE_TIMEOUT if self.mirror or self.audio else RTSP_HEADER_TIMEOUT
         try:
-            head = await self.reader.readuntil(b"\r\n\r\n")
+            while True:
+                try:
+                    async with asyncio.timeout(timeout):
+                        first = await self.reader.readexactly(1)
+                    break
+                except TimeoutError:
+                    last = max(
+                        (self.mirror.last_activity or 0) if self.mirror else 0,
+                        (self.audio.last_activity or 0) if self.audio else 0,
+                    )
+                    timeout = last + RTSP_MEDIA_IDLE_TIMEOUT - time.monotonic()
+                    if not last or timeout <= 0:
+                        raise
+            async with asyncio.timeout(RTSP_HEADER_TIMEOUT):
+                head = first + await self.reader.readuntil(b"\r\n\r\n")
         except asyncio.IncompleteReadError:
             return None
         lines = head.decode("utf-8", "replace").split("\r\n")
@@ -356,8 +378,6 @@ class Connection:
                 raise ValueError("invalid AirPlay timing port")
             self.client_name = plist.get("name") or "iPhone"
             log.info("SETUP from %r (%r, %r)", self.client_name, plist.get("model", ""), plist.get("osVersion", ""))
-            rx.emit("connecting", name=self.client_name, ip=self.remote_ip, model=plist.get("model") or "",
-                    os=plist.get("osVersion") or "")
             loop = asyncio.get_running_loop()
             aeskey = await loop.run_in_executor(None, self.fairplay.decrypt, ekey)
             if self.pairing.ecdh_secret is not None:
@@ -372,33 +392,72 @@ class Connection:
         if streams:
             if self.aeskey is None:
                 raise ValueError("stream SETUP before key exchange")
-            res_streams = []
-            for s in streams:
-                stype = s.get("type")
-                if stype == 110:
-                    sid = int(s.get("streamConnectionID", 0)) & 0xFFFFFFFFFFFFFFFF
-                    async with rx._mirror_lock:
-                        await rx.claim_mirror(self)
-                        if self.mirror:
-                            await self.mirror.stop()
-                        self.mirror = MirrorStream(self.aeskey, sid, rx.decoder, rx.emit)
-                        port = await self.mirror.start()
-                    res_streams.append({"dataPort": port, "type": 110})
-                elif stype == 96:
-                    if self.audio:
-                        self.audio.stop()
-                    ct = int(s.get("ct", 8))
-                    player = rx.get_player()
-                    if player is None:
-                        res_streams.append({"dataPort": 0, "controlPort": 0, "type": 96})
-                        continue
-                    self.audio = AudioStream(self.aeskey, self.aesiv, ct, player)
-                    dport, cport = await self.audio.start()
-                    res_streams.append({"dataPort": dport, "controlPort": cport, "type": 96})
-                else:
-                    log.warning("unknown stream type %s", stype)
-            out["streams"] = res_streams
+            async with rx._stream_lock:
+                if (110 in kinds and rx._mirror_owner not in (None, self)) or (
+                    96 in kinds and rx._audio_owner not in (None, self)
+                ) or any(owner and owner.remote_ip != self.remote_ip
+                         for owner in (rx._mirror_owner, rx._audio_owner)):
+                    resp.status, resp.reason = 453, "Receiver Busy"
+                    return
+                try:
+                    out["streams"] = await self._setup_streams(streams)
+                except BaseException:
+                    if 96 in kinds:
+                        self._stop_audio()
+                    if 110 in kinds:
+                        await self._stop_mirror()
+                    raise
         resp.set(_bplist(out), "application/x-apple-binary-plist")
+
+    async def _setup_streams(self, streams):
+        rx = self.rx
+        results = []
+        for stream in streams:
+            kind = stream["type"]
+            if kind == 110:
+                sid = stream.get("streamConnectionID", 0)
+                await self._stop_mirror()
+                mirror = MirrorStream(self.aeskey, sid & 0xFFFFFFFFFFFFFFFF, rx.decoder, rx.emit,
+                                      peer_ip=self.remote_ip, client_name=self.client_name,
+                                      on_end=self._mirror_finished)
+                try:
+                    port = await mirror.start(self._mirror_offer_deadline)
+                except BaseException:
+                    await mirror.stop()
+                    raise
+                self.mirror, rx._mirror_owner = mirror, self
+                results.append({"dataPort": port, "type": 110})
+            elif kind == 96:
+                ct = stream.get("ct", 8)
+                # Replacing a stream from the same connection retains its player and volume.
+                if self.audio:
+                    self._audio_offer_deadline = self.audio.pending_deadline
+                    self.audio.stop()
+                    self.audio = None
+                player = rx.get_player()
+                if player is None:
+                    self._stop_audio()
+                    results.append({"dataPort": 0, "controlPort": 0, "type": 96})
+                    continue
+                audio = AudioStream(self.aeskey, self.aesiv, ct, player, peer_ip=self.remote_ip,
+                                    on_end=self._audio_finished)
+                try:
+                    dport, cport = await audio.start(self._audio_offer_deadline)
+                    if rx.player is not player:
+                        raise ConnectionError("audio owner ended during stream setup")
+                except BaseException:
+                    audio.stop()
+                    if rx._audio_owner is self:
+                        self._stop_audio()
+                    else:
+                        player.close()
+                        rx.player = None
+                    raise
+                self.audio, rx._audio_owner = audio, self
+                results.append({"dataPort": dport, "controlPort": cport, "type": 96})
+            else:
+                log.warning("unknown stream type %d", kind)
+        return results
 
     def on_get_parameter(self, req, resp):
         if req.body.startswith(b"volume"):
@@ -406,11 +465,46 @@ class Connection:
 
     def on_set_parameter(self, req):
         ct = req.header("Content-Type") or ""
-        if ct == "text/parameters" and req.body.startswith(b"volume:"):
-            try:
-                self.rx.set_volume(float(req.body.split(b":", 1)[1].strip()))
-            except ValueError:
-                pass
+        if self.rx._audio_owner is self and ct == "text/parameters" and req.body.startswith(b"volume:"):
+            db = float(req.body.split(b":", 1)[1].strip())
+            if not math.isfinite(db) or not -144 <= db <= 0:
+                raise ValueError("invalid AirPlay volume")
+            self.rx.set_volume(db)
+
+    def _stop_audio(self):
+        if self.audio:
+            self.audio.stop()
+        self._audio_finished(self.audio)
+
+    def _audio_finished(self, audio):
+        if self.audio is audio:
+            if audio:
+                self._audio_offer_deadline = audio.pending_deadline
+            self.audio = None
+            if self.rx._audio_owner is self:
+                self.rx._audio_owner = None
+                self.rx.set_volume(0)
+                if self.rx.player:
+                    self.rx.player.close()
+                    self.rx.player = None
+
+    async def _stop_mirror(self):
+        mirror, self.mirror = self.mirror, None
+        if mirror:
+            await mirror.stop()
+            self._mirror_offer_deadline = mirror.pending_deadline
+        if self.rx._mirror_owner is self:
+            self.rx._mirror_owner = None
+
+    def _mirror_finished(self, mirror):
+        if self.mirror is mirror:
+            self._mirror_offer_deadline = mirror.pending_deadline
+            self.mirror = None
+            if self.rx._mirror_owner is self:
+                self.rx._mirror_owner = None
+            audio_owner = self.rx._audio_owner
+            if audio_owner and audio_owner.remote_ip == self.remote_ip:
+                audio_owner._stop_audio()
 
     async def on_teardown(self, req, resp):
         types = set()
@@ -420,27 +514,20 @@ class Connection:
             except Exception:
                 pass
         resp.headers.append(("Connection", "close"))
-        if 96 in types and self.audio:
-            self.audio.stop()
-            self.audio = None
-        if 110 in types and self.mirror:
-            await self.mirror.stop()
-            self.mirror = None
+        if 96 in types:
+            self._stop_audio()
+        if 110 in types:
+            await self._stop_mirror()
         if not types:
             await self.cleanup()
             resp.close = True
 
     async def cleanup(self):
-        if self.audio:
-            self.audio.stop()
-            self.audio = None
-        if self.mirror:
-            await self.mirror.stop()
-            self.mirror = None
+        self._stop_audio()
+        await self._stop_mirror()
         if self.timing:
             self.timing.stop()
             self.timing = None
-        self.rx.release_mirror(self)
 
 
 class Receiver:
@@ -459,7 +546,8 @@ class Receiver:
         self.port = 0
         self.advertiser = None
         self._mirror_owner = None
-        self._mirror_lock = asyncio.Lock()
+        self._audio_owner = None
+        self._stream_lock = asyncio.Lock()
         self._connections = Counter()
         self._thread = None
         self._server = None
@@ -495,18 +583,6 @@ class Receiver:
         db = self.volume_db
         self.player.muted = self.muted or db <= -144
         self.player.gain = 0.0 if db <= -144 else max(0.0, min(1.0, 10 ** (db / 20.0)))
-
-    # ---------------------------------------------------------------- mirror ownership
-    async def claim_mirror(self, conn):
-        old = self._mirror_owner
-        self._mirror_owner = conn
-        if old is not None and old is not conn and old.mirror:
-            await old.mirror.stop()
-            old.mirror = None
-
-    def release_mirror(self, conn):
-        if self._mirror_owner is conn:
-            self._mirror_owner = None
 
     # ---------------------------------------------------------------- lifecycle
     def start(self):
