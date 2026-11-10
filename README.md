@@ -1,4 +1,4 @@
-# iCast
+# <sub><img src="icast/icon.png" width="36" height="36" alt=""></sub> iCast
 
 **English** · [Tiếng Việt](README.vi.md) · [简体中文](README.zh-CN.md)
 
