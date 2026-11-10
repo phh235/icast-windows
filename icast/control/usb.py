@@ -325,6 +325,19 @@ def list_devices(cancel=None):
     raise UsbError("Could not list the USB devices:\n" + _tail(err, 6))
 
 
+def select_device(devices):
+    """Return the only connected iPhone and its usable UDID."""
+    if not devices:
+        raise UsbError(MSG_NO_DEVICE)
+    if len(devices) > 1:
+        raise UsbError("Connect only the iPhone you want to control by USB.")
+    device = devices[0]
+    udid = device.get("Identifier") or device.get("UniqueDeviceID")
+    if not isinstance(udid, str) or not udid.strip():
+        raise UsbError("usbmuxd reported an iPhone without a UDID. Reconnect it and try again.")
+    return device, udid
+
+
 def developer_mode_enabled(udid, cancel=None):
     code, out, err = pmd3("amfi", "developer-mode-status", "--udid", udid, timeout=30, cancel=cancel)
     if code:
@@ -400,15 +413,7 @@ class UsbSession:
     def bring_up(self, progress=lambda msg: None, wait=90):
         cancel = self._closed
         progress("Looking for the iPhone on USB...")
-        devices = list_devices(cancel=cancel)
-        if not devices:
-            raise UsbError(MSG_NO_DEVICE)
-        if len(devices) > 1:
-            raise UsbError("Connect only the iPhone you want to control by USB.")
-        self.device = devices[0]
-        self.udid = self.device.get("Identifier") or self.device.get("UniqueDeviceID")
-        if not self.udid:
-            raise UsbError("usbmuxd reported an iPhone without a UDID")
+        self.device, self.udid = select_device(list_devices(cancel=cancel))
         version = str(self.device.get("ProductVersion") or "0")
         self.ios = parse_version(version)
         name = self.device.get("DeviceName") or "iPhone"

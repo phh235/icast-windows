@@ -66,12 +66,15 @@ class MockWDA:
                 raw = self.rfile.read(n) if n else b""
                 with mock_wda.lock:
                     mock_wda.client_ports.add(self.client_address[1])
-                    drop = mock_wda.dead or mock_wda.drop_next
+                    dead, drop = mock_wda.dead, mock_wda.drop_next
                     mock_wda.drop_next = False
-                if drop:
+                if dead:
                     self.close_connection = True
                     return
                 status, payload = mock_wda.route(self.command, self.path, json.loads(raw) if raw else None)
+                if drop:
+                    self.close_connection = True
+                    return
                 data = json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -287,6 +290,18 @@ class WDAClientTests(unittest.TestCase):
         self.assertTrue(self.wda.status()["ready"])  # retried on a fresh connection
         self.assertEqual(len(self.mock.client_ports), 2)
 
+    def test_lost_reply_does_not_replay_applied_input(self):
+        self.wda.new_session()
+        self.mock.drop_next = True
+        with self.assertRaises(WDAError):
+            self.wda.type_text("x")
+        self.assertEqual(self.mock.typed(), "x")
+        self.assertEqual(len(self.mock.client_ports), 1)
+
+        self.wda.type_text("y")
+        self.assertEqual(self.mock.typed(), "xy")
+        self.assertEqual(len(self.mock.client_ports), 2)
+
     def test_unreachable_raises_wda_error(self):
         with WDA(f"http://127.0.0.1:{closed_port()}", timeout=3) as wda:
             with self.assertRaises(WDAError):
@@ -497,6 +512,21 @@ class ControllerTests(unittest.TestCase):
         ctrl.tap(0.1, 0.1)  # orientations agree again: the cached size is used
         self.next_pointer_action(n)
         self.assertEqual(len(self.mock.find("GET", "/window/size")), sizes + 1)
+
+    def test_commands_without_coordinates_do_not_read_window_size(self):
+        ctrl = self.controller()
+        run = mock.Mock(cancelled=False)
+        wda = mock.Mock()
+        wda.window_size.side_effect = WDAError("screen size unavailable")
+
+        ctrl._execute(run, wda, "home")
+        ctrl._execute(run, wda, "type", "text")
+        ctrl._execute(run, wda, "button", "volumeUp")
+
+        wda.window_size.assert_not_called()
+        wda.home.assert_called_once_with()
+        wda.type_text.assert_called_once_with("text")
+        wda.press_button.assert_called_once_with("volumeUp")
 
     def test_stop_always_announces_off(self):
         ctrl = self.controller()
@@ -788,6 +818,21 @@ class UsbTests(unittest.TestCase):
                 mock.patch.object(usb, "pmd3", return_value=(0, json.dumps([dev], indent=4), "")):
             self.assertEqual(usb.list_devices(), [dev])
 
+    def test_select_device_accepts_the_legacy_udid_field(self):
+        device = {"UniqueDeviceID": "UDID1"}
+        self.assertEqual(usb.select_device([device]), (device, "UDID1"))
+
+    def test_bring_up_validates_selection_before_starting_usb_commands(self):
+        device = {"Identifier": "UDID1"}
+        for devices, message in (([], "No iPhone found"), ([device, device], "Connect only"),
+                                 ([{}], "without a UDID")):
+            with self.subTest(devices=devices), \
+                    mock.patch.object(usb, "list_devices", return_value=devices), \
+                    mock.patch.object(usb, "pmd3") as pmd3:
+                with self.assertRaisesRegex(usb.UsbError, message):
+                    usb.UsbSession().bring_up()
+                pmd3.assert_not_called()
+
     def test_list_devices_untrusted(self):
         def fake(*args, timeout=60, cancel=None):
             if "--simple" in args:
@@ -1054,6 +1099,21 @@ class CliTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("reports it is unavailable for control", out)
         self.assertNotIn("so control works", out)
+
+    def test_usb_commands_report_invalid_device_selection(self):
+        device = {"Identifier": "UDID1", "ProductVersion": "17.5.1"}
+        for command in ("doctor", "reveal-dev-mode"):
+            for devices, message in (([device, device], "Connect only"),
+                                     ([{"ProductVersion": "17.5.1"}], "without a UDID")):
+                with self.subTest(command=command, devices=devices), \
+                        mock.patch.object(usb, "usbmuxd_reachable", return_value=True), \
+                        mock.patch.object(usb, "list_devices", return_value=devices), \
+                        mock.patch.object(cli, "_check_wda", return_value=False), \
+                        mock.patch.object(usb, "pmd3") as pmd3:
+                    code, output = self.run_cli(command)
+                self.assertEqual(code, 1, output)
+                self.assertIn(message, output)
+                pmd3.assert_not_called()
 
     def test_doctor_all_good(self):
         dev = {"Identifier": "UDID1", "DeviceName": "Test iPhone", "ProductVersion": "17.5.1", "ProductType": "iPhone15,2"}

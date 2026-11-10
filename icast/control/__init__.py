@@ -315,27 +315,31 @@ class Controller:
         return w, h
 
     def _execute(self, run, wda, kind, *a):
-        w, h = self._screen_size(wda)
         if run.cancelled:
             return None
 
-        def px(f):  # WDA rejects points outside the screen (a drag may end outside the window)
-            return min(max(f * w, 0.0), w - 1)
+        if kind in ("tap", "double", "long", "swipe", "scroll"):
+            w, h = self._screen_size(wda)
+            if run.cancelled:
+                return None
 
-        def py(f):
-            return min(max(f * h, 0.0), h - 1)
+            def px(f):  # A drag may end outside the window.
+                return min(max(f * w, 0.0), w - 1)
 
-        if kind == "tap":
-            wda.tap(px(a[0]), py(a[1]))
-        elif kind == "double":
-            wda.double_tap(px(a[0]), py(a[1]))
-        elif kind == "long":
-            wda.long_press(px(a[0]), py(a[1]))
-        elif kind == "swipe":
-            ms = max(60, min(1500, a[4] * 1000))
-            wda.swipe(px(a[0]), py(a[1]), px(a[2]), py(a[3]), duration_ms=ms)
-        elif kind == "scroll":
-            self._scroll(run, wda, w, h, *a)
+            def py(f):
+                return min(max(f * h, 0.0), h - 1)
+
+            if kind == "tap":
+                wda.tap(px(a[0]), py(a[1]))
+            elif kind == "double":
+                wda.double_tap(px(a[0]), py(a[1]))
+            elif kind == "long":
+                wda.long_press(px(a[0]), py(a[1]))
+            elif kind == "swipe":
+                ms = max(60, min(1500, a[4] * 1000))
+                wda.swipe(px(a[0]), py(a[1]), px(a[2]), py(a[3]), duration_ms=ms)
+            else:
+                self._scroll(run, wda, w, h, *a)
         elif kind == "type":
             wda.type_text(a[0])
         elif kind == "home":

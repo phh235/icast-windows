@@ -142,10 +142,9 @@ class WDA:
                         raise WDAError(f"{method} {path} -> timed out") from None
                     if isinstance(e, WDAError):
                         raise
-                    # An idle keep-alive connection that the server already closed fails like
-                    # this on first use: retry once on a fresh connection. Never retry timeouts.
+                    # A dropped reply may follow an applied command. Only retry reads.
                     stale = isinstance(e, (ConnectionError, http.client.BadStatusLine))
-                    if attempt == 1 and reused and stale and not isinstance(e, TimeoutError):
+                    if method == "GET" and attempt == 1 and reused and stale:
                         continue
                     raise WDAError(f"{method} {path} -> {describe_error(e)}") from None
                 finally:

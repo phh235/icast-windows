@@ -64,24 +64,6 @@ def _device_line(dev):
     return f"{name} ({model}), iOS {dev.get('ProductVersion') or '?'}, UDID {dev.get('Identifier') or '?'}"
 
 
-def _first_device():
-    """(device dict, udid, (major, minor)) of the first USB iPhone; prints [FAIL] and returns None."""
-    if not usb.usbmuxd_reachable():
-        fail("Apple's USB service (usbmuxd) is not running", ADVICE_USBMUXD)
-        return None
-    try:
-        devices = usb.list_devices()
-    except usb.UsbError as e:
-        fail("Could not read the iPhone over USB", str(e))
-        return None
-    if not devices:
-        fail("No iPhone found on USB", usb.MSG_NO_DEVICE)
-        return None
-    dev = devices[0]
-    udid = dev.get("Identifier") or dev.get("UniqueDeviceID")
-    return dev, udid, usb.parse_version(dev.get("ProductVersion"))
-
-
 # ---------------------------------------------------------------------- doctor
 def _check_usb():
     """The USB chain; stops at the first failure. Returns True if every check passed."""
@@ -106,16 +88,13 @@ def _check_usb():
     except usb.UsbError as e:
         fail("Could not read the iPhone over USB", str(e))
         return False
-    if not devices:
-        fail("No iPhone found on USB", usb.MSG_NO_DEVICE)
-        return False
     for dev in devices:
         ok(f"iPhone on USB: {_device_line(dev)}")
-    if len(devices) > 1:
-        fail("Several iPhones are connected", "Connect only the iPhone you want to control by USB.")
+    try:
+        dev, udid = usb.select_device(devices)
+    except usb.UsbError as e:
+        fail("Could not select an iPhone over USB", str(e))
         return False
-    dev = devices[0]
-    udid = dev.get("Identifier") or dev.get("UniqueDeviceID")
     ios = usb.parse_version(dev.get("ProductVersion"))
 
     if ios[0] >= 16:
@@ -205,10 +184,12 @@ def cmd_get_wda(args):
 
 
 def cmd_reveal_dev_mode(args):
-    found = _first_device()
-    if not found:
+    try:
+        dev, udid = usb.select_device(usb.list_devices())
+    except usb.UsbError as e:
+        fail("Could not select an iPhone over USB", str(e))
         return 1
-    dev, udid, ios = found
+    ios = usb.parse_version(dev.get("ProductVersion"))
     ok(f"iPhone on USB: {_device_line(dev)}")
     if ios[0] and ios[0] < 16:
         ok(f"iOS {ios[0]} has no Developer Mode switch; nothing to do.")
