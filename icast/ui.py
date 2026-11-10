@@ -374,8 +374,8 @@ class PhoneWindow(QWidget):
             p.setRenderHint(QPainter.Antialiasing)
             p.setPen(Qt.NoPen)
             for i in range(SHADOW, 0, -2):
-                a = int(34 * (1 - i / SHADOW) ** 2) + 2
-                p.setBrush(QColor(0, 0, 0, a))
+                alpha = int(20 * (1 - i / SHADOW) ** 2) + 1
+                p.setBrush(QColor(0, 0, 0, alpha))
                 p.drawRoundedRect(rect.adjusted(-i, -i + 6, i, i + 6), radius + i, radius + i)
             p.end()
             self._shadow, self._shadow_key = shadow, key
@@ -409,12 +409,9 @@ class PhoneWindow(QWidget):
 
         self._paint_touches(p, rect, r)
 
-        # bezel
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(255, 255, 255, 46), 1.2))
-        p.drawRoundedRect(rect.adjusted(0.6, 0.6, -0.6, -0.6), r, r)
-        p.setPen(QPen(QColor(0, 0, 0, 120), 1))
-        p.drawRoundedRect(rect.adjusted(-0.5, -0.5, 0.5, 0.5), r + 0.5, r + 0.5)
+        p.setPen(QPen(QColor(255, 255, 255, 38), 1))
+        p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r - 0.5, r - 0.5)
 
         if self.hover:
             self._paint_bar(p)
