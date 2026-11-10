@@ -6,7 +6,6 @@ import threading
 import time
 
 import av
-import numpy as np
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from . import net
@@ -14,6 +13,7 @@ from . import net
 log = logging.getLogger(__name__)
 
 RATE = 44100
+FRAME_BYTES = 4  # packed stereo int16
 MAX_AUDIO_PACKET = 16 * 1024
 AUDIO_CONNECT_TIMEOUT = 15
 
@@ -28,8 +28,8 @@ CODECS = {
 class Player:
     """Small jitter buffer in front of a sounddevice output stream."""
 
-    PREBUFFER = int(RATE * 0.08)
-    MAX_BUFFER = int(RATE * 0.35)
+    PREBUFFER = int(RATE * 0.08) * FRAME_BYTES
+    MAX_BUFFER = int(RATE * 0.35) * FRAME_BYTES
 
     def __init__(self):
         self._chunks = collections.deque()
@@ -42,7 +42,7 @@ class Player:
         try:
             import sounddevice as sd
 
-            self._stream = sd.OutputStream(
+            self._stream = sd.RawOutputStream(
                 samplerate=RATE, channels=2, dtype="int16", latency="low", callback=self._callback
             )
             self._stream.start()
@@ -64,8 +64,8 @@ class Player:
             self._buffered = 0
             self._started = False
 
-    def write(self, pcm: np.ndarray):
-        """pcm: int16 array shaped (n, 2)."""
+    def write(self, pcm: memoryview):
+        """Queue packed stereo int16 samples."""
         with self._lock:
             self._chunks.append(pcm)
             self._buffered += len(pcm)
@@ -75,27 +75,31 @@ class Player:
                 self._started = True
 
     def _callback(self, outdata, frames, time_info, status):
-        outdata.fill(0)
+        output = memoryview(outdata).cast("B")
+        output[:] = bytes(len(output))
+        muted, gain = self.muted, self.gain
+        limit = frames * FRAME_BYTES
         with self._lock:
             if not self._started:
                 return
             pos = 0
-            while pos < frames and self._chunks:
+            while pos < limit and self._chunks:
                 chunk = self._chunks[0]
-                n = min(frames - pos, len(chunk))
-                outdata[pos:pos + n] = chunk[:n]
+                n = min(limit - pos, len(chunk))
+                if not muted:
+                    output[pos:pos + n] = chunk[:n]
                 if n == len(chunk):
                     self._chunks.popleft()
                 else:
                     self._chunks[0] = chunk[n:]
                 self._buffered -= n
                 pos += n
-            if pos < frames:  # underrun: refill before playing again
+            if pos < limit:  # underrun: refill before playing again
                 self._started = False
-        if self.muted:
-            outdata.fill(0)
-        elif self.gain < 0.999:
-            np.multiply(outdata, self.gain, out=outdata, casting="unsafe")
+        if not muted and gain < 0.999:
+            samples = output[:pos].cast("h")
+            for index, value in enumerate(samples):
+                samples[index] = int(value * gain)
 
 
 class _Proto(asyncio.DatagramProtocol):
@@ -202,8 +206,8 @@ class AudioStream:
                 self._offer_timer = None
         for f in frames:
             for r in self.resampler.resample(f):
-                pcm = r.to_ndarray().reshape(-1, 2)
+                pcm = memoryview(r.planes[0]).cast("B")[:r.samples * FRAME_BYTES]
                 if not self._decoded:
-                    log.info("audio decoding OK (%d samples/packet, peak %d)", len(pcm), int(np.abs(pcm).max()))
+                    log.info("audio decoding OK (%d samples/packet)", r.samples)
                 self._decoded += 1
                 self.player.write(pcm)

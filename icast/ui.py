@@ -1079,12 +1079,14 @@ class PhoneWindow(QWidget):
             self._hint("Nothing to save yet")
             return
         try:
-            arr = frame.to_ndarray(format="bgra")
-            img = QImage(arr.data, arr.shape[1], arr.shape[0], arr.strides[0], QImage.Format_RGB32).copy()
+            frame = frame.reformat(format="bgra")
+            plane = frame.planes[0]
+            img = QImage(memoryview(plane), frame.width, frame.height, plane.line_size, QImage.Format_RGB32)
             folder = Path.home() / "Pictures" / APP_NAME
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / time.strftime("iPhone %Y-%m-%d %H-%M-%S.png")
-            img.save(str(path))
+            if not img.save(str(path)):
+                raise OSError(f"could not write {path}")
             if self._tray:
                 self._tray.showMessage("Screenshot saved", str(path), self.windowIcon(), 3000)
             else:

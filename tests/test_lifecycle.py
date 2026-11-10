@@ -17,7 +17,7 @@ import av
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from icast.airplay import Connection, Receiver, Request, Response, RTSP_BODY_LIMIT, _read_plist  # noqa: E402
-from icast.audio import _Proto  # noqa: E402
+from icast.audio import Player, _Proto  # noqa: E402
 from icast.config import Settings  # noqa: E402
 from icast.video import MAX_PACKET_BYTES, MirrorStream, VideoDecoder  # noqa: E402
 from tools.fake_iphone import Rtsp  # noqa: E402
@@ -390,6 +390,16 @@ class ToolAndAudioTests(unittest.TestCase):
         client.s.recv.side_effect = [bytes([b]) for b in header] + [b"x", b""]
         with self.assertRaisesRegex(ConnectionError, "truncated"):
             client.request("GET", "/info")
+
+    def test_raw_audio_plays_stereo_with_gain_and_underrun_padding(self):
+        with mock.patch("sounddevice.RawOutputStream"):
+            player = Player()
+        player.PREBUFFER = 4
+        player.gain = 0.5
+        player.write(memoryview(struct.pack("=hh", 400, -200)))
+        output = bytearray(8)
+        player._callback(output, 2, None, None)
+        self.assertEqual(struct.unpack("=hhhh", output), (200, -100, 0, 0))
 
 
 class ReceiverShutdownTests(unittest.TestCase):
