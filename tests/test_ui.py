@@ -174,6 +174,18 @@ class WindowControlsTests(unittest.TestCase):
         self.assertEqual(self.window.rx.decoder.target, self.window._display_size())
         self.assertIn("View: Fit (source is too large for 1:1)", self.window._stream_info())
 
+    def test_windows_pin_does_not_hide_or_reopen_window(self):
+        with mock.patch.object(ui, "QApplication") as app, \
+                mock.patch.object(self.window, "_set_windows_topmost", return_value=True) as set_topmost, \
+                mock.patch.object(self.window, "_apply_flags") as apply_flags, \
+                mock.patch.object(self.window, "show") as show:
+            app.platformName.return_value = "windows"
+            self.window._button("pin")
+            self.window._button("pin")
+        self.assertEqual(set_topmost.call_args_list, [mock.call(False), mock.call(True)])
+        apply_flags.assert_not_called()
+        show.assert_not_called()
+
     def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
         self.window.ctrl = mock.Mock()
         press = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)

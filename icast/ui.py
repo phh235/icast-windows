@@ -220,9 +220,24 @@ class PhoneWindow(QWidget):
     # ------------------------------------------------------------ geometry
     def _apply_flags(self):
         flags = Qt.FramelessWindowHint | Qt.Window
-        if self.settings.get("always_on_top", True):
+        if QApplication.platformName() != "windows" and self.settings.get("always_on_top", True):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
+
+    def _set_windows_topmost(self, enabled):
+        if QApplication.platformName() != "windows":
+            return True
+        import win32con
+        import win32gui
+
+        z_order = win32con.HWND_TOPMOST if enabled else win32con.HWND_NOTOPMOST
+        flags = win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
+        try:
+            win32gui.SetWindowPos(int(self.winId()), z_order, 0, 0, 0, 0, flags)
+        except win32gui.error:
+            log.exception("could not change Always on Top")
+            return False
+        return True
 
     def _native_size(self):
         if not self.actual_pixels or self.src_size is None:
@@ -311,6 +326,7 @@ class PhoneWindow(QWidget):
             self.showFullScreen()
             self._flash_bar(1.2)
         self._relayout()
+        self._set_windows_topmost(self.settings.get("always_on_top", True))
 
     def _toggle_actual_pixels(self):
         self._reset_view_input()
@@ -1230,16 +1246,20 @@ class PhoneWindow(QWidget):
             self._phone("home")
         elif name == "pin":
             on = not self.settings.get("always_on_top", True)
+            if not self._set_windows_topmost(on):
+                self._hint("Could not change Always on Top")
+                return
             self.settings["always_on_top"] = on
             self.settings.save()
-            fullscreen = self.isFullScreen()
-            pos = self.pos()
-            self._apply_flags()
-            if fullscreen:
-                self.showFullScreen()
-            else:
-                self.move(pos)
-                self.show()
+            if QApplication.platformName() != "windows":
+                fullscreen = self.isFullScreen()
+                pos = self.pos()
+                self._apply_flags()
+                if fullscreen:
+                    self.showFullScreen()
+                else:
+                    self.move(pos)
+                    self.show()
         self.update()
 
     def _rename(self):
@@ -1360,6 +1380,10 @@ class PhoneWindow(QWidget):
     def resizeEvent(self, e):
         if self.isFullScreen():
             self._update_target()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._set_windows_topmost(self.settings.get("always_on_top", True))
 
     def closeEvent(self, e):
         self._save_pos()
