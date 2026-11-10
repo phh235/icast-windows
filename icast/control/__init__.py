@@ -1,12 +1,11 @@
 """Control the iPhone from the PC (mouse + keyboard) through WebDriverAgent.
 
-The Controller runs on its own thread: it finds or starts WebDriverAgent (already
-running on the phone over Wi-Fi, or brought up over USB) and then executes input
+The Controller runs on its own thread: it starts WebDriverAgent over USB or uses
+an explicitly configured CLI endpoint, and then executes input
 commands from a queue. Positions are passed as fractions of the mirrored screen
 (0..1), so they do not depend on the window size.
 
     ctrl = Controller(on_state=lambda state, message: ...)  # called on the control thread
-    ctrl.device_ip = "192.168.1.20"   # optional: also look for WDA on the phone's Wi-Fi address
     ctrl.screen_aspect = 1179 / 2556  # optional: width / height of the mirrored video
     ctrl.start()                      # off -> starting -> ready (or error)
     ctrl.tap(0.5, 0.25); ctrl.scroll(0.5, 0.5, 1); ctrl.type_text("hi\\n")
@@ -45,15 +44,21 @@ class _Run:
     """One start() .. stop() cycle. A stale run (stopped, or replaced by a newer start())
     can never change the controller's state."""
 
-    def __init__(self):
+    def __init__(self, expected_peer=None, revoked=None):
+        self.expected_peer = expected_peer
+        self.revoked = revoked
         self.stop = threading.Event()
         self.q = queue.Queue()
         self.usb = None
         self._lock = threading.Lock()
 
+    @property
+    def cancelled(self):
+        return self.stop.is_set() or (self.revoked is not None and self.revoked.is_set())
+
     def attach(self, usb):
         with self._lock:
-            if self.stop.is_set():
+            if self.cancelled:
                 return False
             self.usb = usb
             return True
@@ -73,7 +78,7 @@ class Controller:
         self.on_state = on_state
         self.state = OFF
         self.message = ""
-        self.device_ip = None  # learned from the AirPlay connection (WDA also listens on Wi-Fi)
+        self.device_ip = None  # explicit CLI override only
         # width / height of the mirrored video, set by the UI; None = unknown. When the iPhone
         # rotates, the video turns at once, while WDA's cached screen size would only be
         # re-read after IDLE_CHECK seconds without input.
@@ -96,11 +101,11 @@ class Controller:
         with self._lock:
             return self.state, self.message, self._serial
 
-    def start(self):
+    def start(self, expected_peer=None, revoked=None):
         with self._lock:
             if self._run is not None and not self._run.stop.is_set():
                 return  # already starting or ready
-            run = self._run = _Run()
+            run = self._run = _Run(expected_peer, revoked)
             # visible at once to callers; the control thread announces it through on_state
             self.state, self.message = STARTING, "Looking for WebDriverAgent..."
             self._thread = threading.Thread(target=self._main, args=(run,), name="control", daemon=True)
@@ -110,6 +115,8 @@ class Controller:
         with self._lock:
             run, self._run = self._run, None
             self.wda = None
+            if run is not None:
+                run.stop.set()
             # always announced, also when already off, so a listener that applied a late
             # (queued) notification gets back in sync
             self._set(OFF, "")
@@ -141,20 +148,30 @@ class Controller:
     def _main(self, run):
         wda = None
         try:
+            if run.cancelled:
+                return
             self._set(STARTING, "Looking for WebDriverAgent...", run)
             self._scroll_carry = (0.0, 0.0)
             self._size_checked = 0.0
-            url = self._find_running()
+            url = None if run.expected_peer else self._find_running()
             if not url:
                 usb = UsbSession()
                 if not run.attach(usb):
                     return
                 url = usb.bring_up(progress=lambda m: self._set(STARTING, m, run))
-            wda = WDA(url)
+            if run.cancelled:
+                return
+            wda = WDA(url, cancelled=lambda: run.cancelled)
+            if run.expected_peer:
+                ios = wda.status(timeout=3).get("ios")
+                if not isinstance(ios, dict) or ios.get("ip") != run.expected_peer:
+                    raise UsbError("Connect the mirrored iPhone by USB on the same Wi-Fi before enabling control.")
+            if run.cancelled:
+                return
             wda.new_session()
             w, h = wda.window_size()
             with self._lock:
-                if run is not self._run or run.stop.is_set():
+                if run is not self._run or run.cancelled:
                     return
                 self.wda = wda
                 self._set(READY, f"Control ready ({w:.0f}x{h:.0f} pt)", run)
@@ -185,17 +202,19 @@ class Controller:
                 except queue.Empty:
                     self._idle_check(run, wda)
                     continue
-            if cmd is None or run.stop.is_set():
+            if cmd is None or run.cancelled:
                 return
             cmd = self._coalesce(run.q, cmd, held)
+            if run.cancelled:
+                return
             if cmd[0] == "swipe" and run.q.qsize() > 8:
                 continue  # falling behind: drop stale drags
             try:
-                hint = self._execute(wda, *cmd)
+                hint = self._execute(run, wda, *cmd)
                 if hint:
                     self._set(READY, hint, run)
             except WDAError as e:
-                if run.stop.is_set():
+                if run.cancelled:
                     return
                 log.warning("command %s failed: %s", cmd[0], e)
                 if not wda_ready(wda.base):
@@ -238,19 +257,16 @@ class Controller:
             return cmd
 
     def _find_running(self):
-        candidates = [f"http://127.0.0.1:{WDA_PORT}"]
-        if self.device_ip and self.device_ip not in ("127.0.0.1", "localhost"):
-            candidates.append(f"http://{self.device_ip}:{WDA_PORT}")
-        for url in candidates:
+        if self.device_ip:
+            url = f"http://{self.device_ip}:{WDA_PORT}"
             if wda_ready(url, timeout=1.5):
-                log.info("WebDriverAgent already running at %s", url)
                 return url
         return None
 
     # ---- commands (callable from any thread; ignored unless READY)
     def _put(self, *cmd):
         run = self._run
-        if run is not None and self.state == READY:
+        if run is not None and self.state == READY and not run.cancelled:
             run.q.put(cmd)
 
     def tap(self, xf, yf):
@@ -298,8 +314,10 @@ class Controller:
                 log.info("screen size re-read after rotation: %.0fx%.0f pt", w, h)
         return w, h
 
-    def _execute(self, wda, kind, *a):
+    def _execute(self, run, wda, kind, *a):
         w, h = self._screen_size(wda)
+        if run.cancelled:
+            return None
 
         def px(f):  # WDA rejects points outside the screen (a drag may end outside the window)
             return min(max(f * w, 0.0), w - 1)
@@ -317,7 +335,7 @@ class Controller:
             ms = max(60, min(1500, a[4] * 1000))
             wda.swipe(px(a[0]), py(a[1]), px(a[2]), py(a[3]), duration_ms=ms)
         elif kind == "scroll":
-            self._scroll(wda, w, h, *a)
+            self._scroll(run, wda, w, h, *a)
         elif kind == "type":
             wda.type_text(a[0])
         elif kind == "home":
@@ -330,7 +348,7 @@ class Controller:
         else:
             log.warning("unknown command %s", kind)
 
-    def _scroll(self, wda, w, h, xf, yf, notches):
+    def _scroll(self, run, wda, w, h, xf, yf, notches):
         now = time.monotonic()
         carry, when = self._scroll_carry
         if now - when > 1.0 or carry * notches < 0:
@@ -344,7 +362,7 @@ class Controller:
         x = min(max(xf * w, w * 0.08), w * 0.92)  # away from the edges (edge swipe = "back")
         y = yf * h
         for _ in range(SCROLL_MAX_STEPS):
-            if abs(total) < SCROLL_MIN_PT:
+            if abs(total) < SCROLL_MIN_PT or run.cancelled:
                 break
             dy = max(-SCROLL_MAX_STEP * h, min(SCROLL_MAX_STEP * h, total))
             y1 = min(max(y, h * 0.15 + max(0, -dy)), h * 0.85 - max(0, dy))

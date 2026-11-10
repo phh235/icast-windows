@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import plistlib
+import re
 import socket
 import stat
 import subprocess
@@ -25,6 +26,7 @@ import urllib.error
 import urllib.request
 import zipfile
 import zlib
+from contextlib import suppress
 from http.client import HTTPException
 from pathlib import Path
 from xml.parsers.expat import ExpatError
@@ -35,7 +37,10 @@ from .wda import WDA, WDAError, describe_error
 log = logging.getLogger(__name__)
 
 WDA_PORT = 8100
+USB_FORWARD_SCRIPT = Path(__file__).with_name("_usb_forward.py")
 WDA_RELEASE_TAG = "v16.15.3"
+# The release asset's WebDriverAgentLib.framework reports this version in /status.
+WDA_RUNNER_VERSION = "16.15.2"
 WDA_RELEASE_URL = (
     f"https://github.com/appium/WebDriverAgent/releases/download/{WDA_RELEASE_TAG}/WebDriverAgentRunner-Runner.zip"
 )
@@ -189,9 +194,10 @@ def _tie_to_job(proc):
         log.debug("could not tie child process to a job: %s", e)
 
 
-def _popen(args, **kw):
+def _popen(args, *, script=None, **kw):
+    entrypoint = [str(script)] if script else ["-m", "pymobiledevice3"]
     proc = subprocess.Popen(
-        [_python(), "-m", "pymobiledevice3", *args],
+        [_python(), "-I", "-X", "utf8", "-u", *entrypoint, *args],
         stdin=subprocess.DEVNULL, creationflags=NO_WINDOW, env=_child_env(), **kw,
     )
     _tie_to_job(proc)
@@ -348,27 +354,20 @@ def find_wda_bundle(udid, cancel=None):
     return candidates[0] if candidates else None
 
 
-def free_port(preferred=WDA_PORT):
-    for port in (preferred, 0):
-        with socket.socket() as s:
-            try:
-                s.bind(("127.0.0.1", port))
-                return s.getsockname()[1]
-            except OSError:
-                continue
-    raise UsbError("no free local TCP port")
-
-
-def wda_ready(base_url, timeout=2.0):
-    """True if WebDriverAgent answers /status at base_url (no system proxy is used)."""
+def probe_wda(base_url, timeout=2.0):
+    """Return the status payload and whether WDA is ready to accept commands."""
     if not base_url:
-        return False
+        return {}, False
     try:
         with WDA(base_url, timeout=timeout) as wda:
             value = wda.status(timeout=timeout)
     except (WDAError, ValueError):
-        return False
-    return bool(value) and bool(value.get("ready", True))
+        return {}, False
+    return value, bool(value) and bool(value.get("ready", True))
+
+
+def wda_ready(base_url, timeout=2.0):
+    return probe_wda(base_url, timeout)[1]
 
 
 # ---------------------------------------------------------------------- session
@@ -385,6 +384,7 @@ class UsbSession:
         self.ios = (0, 0)
         self.bundle = None
         self.local_port = None
+        self._forward_log = None
         self._closed = threading.Event()
         self._lock = threading.Lock()
 
@@ -404,7 +404,7 @@ class UsbSession:
         if not devices:
             raise UsbError(MSG_NO_DEVICE)
         if len(devices) > 1:
-            log.info("%d iPhones on USB, using the first one", len(devices))
+            raise UsbError("Connect only the iPhone you want to control by USB.")
         self.device = devices[0]
         self.udid = self.device.get("Identifier") or self.device.get("UniqueDeviceID")
         if not self.udid:
@@ -431,22 +431,38 @@ class UsbSession:
 
         progress("Starting WebDriverAgent on the iPhone...")
         self._spawn("wda_runner", xcuitest_args(self.bundle, self.udid, self.ios))
-        self.local_port = free_port()
-        self._spawn("wda_forward", forward_args(self.local_port, self.udid))
+        self._spawn("wda_forward", [self.udid, str(WDA_PORT)])
 
         progress("Waiting for WebDriverAgent to answer...")
         deadline = time.monotonic() + wait
         while True:
-            url = self.base_url
-            if wda_ready(url):
-                return url
             self.check()
+            if self.local_port is None:
+                ready = re.search(r"^ICAST_USB_FORWARD_PORT=([0-9]{1,5})$", self.read_log("wda_forward"), re.M)
+                if ready and 1 <= int(ready[1]) <= 65535:
+                    self.local_port = int(ready[1])
+            url = self.base_url
+            if url:
+                status, ready = probe_wda(url)
+                build = status.get("build")
+                version = build.get("version") if isinstance(build, dict) else None
+                if (ready or version is not None) and version != WDA_RUNNER_VERSION:
+                    reported = repr(version[:80]) if isinstance(version, str) else "unknown"
+                    raise UsbError(
+                        f"Selected WDA bundle {self.bundle!r}. Port {WDA_PORT} reported version {reported} "
+                        f"(expected {WDA_RUNNER_VERSION}).\n"
+                        "If the selected bundle is an old copy, remove it and retry with the supported USB-only build. "
+                        "If the selected bundle is current, stop any other running WDA. "
+                        "To get the supported IPA, run control.bat get-wda."
+                    )
+                if ready:
+                    return url
             if time.monotonic() > deadline:
                 break
             if cancel.wait(1):
                 raise Cancelled()
         text = self.read_log("wda_runner")
-        raise UsbError(explain(text) or MSG_WDA_TIMEOUT + "\n" + _tail(text))
+        raise UsbError(f"Selected WDA bundle {self.bundle!r}.\n" + (explain(text) or MSG_WDA_TIMEOUT + "\n" + _tail(text)))
 
     def check(self):
         """Raise UsbError if the session was closed or one of its processes has exited."""
@@ -455,29 +471,40 @@ class UsbSession:
         for name, p, _ in list(self.procs):
             if p.poll() is not None:
                 text = self.read_log(name)
-                what = "WebDriverAgent stopped" if name == "wda_runner" else "The USB port forwarder stopped"
-                raise UsbError(explain(text) or f"{what} (exit code {p.returncode}):\n{_tail(text)}")
-
-    def log_path(self, name):
-        return APP_DIR / f"{name}.log"
+                if name == "wda_runner":
+                    what = f"WebDriverAgent bundle {self.bundle!r} stopped"
+                else:
+                    what = "The USB port forwarder stopped"
+                hint = explain(text)
+                if hint:
+                    raise UsbError(f"{what}.\n{hint}")
+                raise UsbError(f"{what} (exit code {p.returncode}):\n{_tail(text)}")
 
     def read_log(self, name):
-        try:
-            return self.log_path(name).read_text("utf-8", "replace")
-        except OSError:
-            return ""
+        with self._lock:
+            path = self._forward_log if name == "wda_forward" else APP_DIR / f"{name}.log"
+            if path:
+                with suppress(OSError):
+                    return path.read_text("utf-8", "replace")
+        return ""
 
     def _spawn(self, name, args):
         with self._lock:
             if self._closed.is_set():
                 raise Cancelled()
             APP_DIR.mkdir(parents=True, exist_ok=True)
-            logf = open(self.log_path(name), "w", encoding="utf-8", errors="replace")
+            if name == "wda_forward":
+                logf = tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", errors="replace", dir=APP_DIR,
+                                                  prefix=".wda_forward-", suffix=".log", delete=False)
+                self._forward_log = Path(logf.name)
+            else:
+                logf = open(APP_DIR / f"{name}.log", "w", encoding="utf-8", errors="replace")
             logf.write("pymobiledevice3 " + " ".join(args) + "\n")
             logf.flush()
             log.info("spawn %s: %s", name, " ".join(args))
             try:
-                p = _popen(args, stdout=logf, stderr=subprocess.STDOUT)
+                script = USB_FORWARD_SCRIPT if name == "wda_forward" else None
+                p = _popen(args, script=script, stdout=logf, stderr=subprocess.STDOUT)
             except OSError as e:
                 logf.close()
                 raise UsbError(f"Could not start pymobiledevice3: {describe_error(e)}") from None
@@ -487,6 +514,7 @@ class UsbSession:
         with self._lock:
             self._closed.set()
             procs, self.procs = self.procs, []
+            forward_log, self._forward_log = self._forward_log, None
         for _, p, _ in procs:
             if p.poll() is None:
                 try:
@@ -499,20 +527,24 @@ class UsbSession:
             except subprocess.TimeoutExpired:
                 _kill(p)
             logf.close()
+        if forward_log:
+            # Keep the last completed log for troubleshooting, never for readiness checks.
+            try:
+                forward_log.replace(APP_DIR / "wda_forward.log")
+            except OSError:
+                with suppress(OSError):
+                    forward_log.unlink(missing_ok=True)
         self.local_port = None
 
 
 def xcuitest_args(bundle, udid, ios=(0, 0)):
-    args = ["developer", "dvt", "xcuitest", bundle, "--udid", udid]
+    args = ["developer", "dvt", "xcuitest", bundle, "--udid", udid,
+            "--env", "USE_IP=127.0.0.1", "--env", f"USE_PORT={WDA_PORT}"]
     if tuple(ios) >= (17, 4):
         # in-process userspace tunnel: no administrator rights needed. iOS 17.0-17.3 has no
         # CoreDeviceProxy, so there pymobiledevice3 falls back to a tunneld started as admin.
         args.append("--userspace")
     return args
-
-
-def forward_args(local_port, udid):
-    return ["usbmux", "forward", str(local_port), str(WDA_PORT), "--udid", udid]
 
 
 # ---------------------------------------------------------------------- WebDriverAgent download

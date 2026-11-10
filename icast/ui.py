@@ -157,6 +157,9 @@ class PhoneWindow(QWidget):
         self.state = "starting"
         self.info = {}
         self.client = None
+        self._mirror_peer = None
+        self._mirror_revoked = None
+        self.auto_control = False
         self.hover = False
         self.drag_offset = None
         self.fps = 0.0
@@ -275,6 +278,9 @@ class PhoneWindow(QWidget):
                 self._relayout()
         if self.state != "mirroring":
             self.state = "mirroring"
+        if self.auto_control and self._mirror_peer:
+            self.auto_control = False
+            self._toggle_control()
         self._frames += 1
         now = time.time()
         if now - self._fps_t >= 1:
@@ -289,11 +295,13 @@ class PhoneWindow(QWidget):
             if self.state in ("starting", "error"):
                 self.state = "waiting"
         elif event == "connecting":
+            if self.ctrl is not None and self.ctrl.active:
+                self.ctrl.stop()
             self.client = info.get("name")
             self.state = "connecting"
-            ip = info.get("ip")
-            if self.ctrl is not None and ip:
-                self.ctrl.device_ip = ip  # WebDriverAgent may already listen on the phone's Wi-Fi address
+            self._mirror_peer = info.get("ip")
+            self._mirror_revoked = info.get("revoked")
+            self.image = self._frame_buffer = None
         elif event == "format":
             if self.state != "mirroring":
                 self.state = "connecting"
@@ -301,11 +309,15 @@ class PhoneWindow(QWidget):
             self.state = "paused"
         elif event == "mirror_stopped":
             self.state = "waiting"
+            self._mirror_peer = None
+            self._mirror_revoked = None
             self.image = None
             self._frame_buffer = None
             self.src_size = None
             if self.ctrl is not None:
                 self.ctrl.screen_aspect = None
+                if self.ctrl.active:
+                    self.ctrl.stop()
             self._drop_tap()  # the screen it was aimed at is gone
             self._cancel_gesture()
             if abs(self.aspect - DEFAULT_ASPECT) > 0.01:
@@ -717,8 +729,11 @@ class PhoneWindow(QWidget):
             self._hint("iPhone control is not available")
         elif self.ctrl.active:  # the controller's own state: the shown one may lag behind
             self.ctrl.stop()
+        elif (self.image is None or not self._mirror_peer or self._mirror_revoked is None
+              or self._mirror_revoked.is_set()):
+            self._hint("Start mirroring the iPhone first")
         else:
-            self.ctrl.start()
+            self.ctrl.start(expected_peer=self._mirror_peer, revoked=self._mirror_revoked)
 
     def _phone(self, method, *args):
         """Send a command (home, app_switcher, button) to the iPhone, or explain why not."""

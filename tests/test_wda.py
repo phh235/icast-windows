@@ -370,6 +370,20 @@ class ControllerTests(unittest.TestCase):
     def wait_state(self, ctrl, state, timeout=5.0):
         self.assertTrue(wait_for(lambda: ctrl.state == state, timeout), f"state {ctrl.state!r}, wanted {state!r}")
 
+    def test_mirror_control_uses_usb_and_rejects_mismatched_phone(self):
+        ctrl = self.controller()
+        usb_session = mock.Mock()
+        usb_session.bring_up.return_value = self.mock.url
+        with mock.patch.object(control, "UsbSession", return_value=usb_session), \
+                mock.patch.object(Controller, "_find_running") as discover:
+            ctrl.start(expected_peer="10.0.0.3")
+            self.wait_state(ctrl, ERROR)
+            self.assertEqual(self.mock.sessions, 0)
+            ctrl.start(expected_peer="10.0.0.2")
+            self.wait_state(ctrl, READY)
+            discover.assert_not_called()
+            self.assertEqual(self.mock.sessions, 1)
+
     def next_pointer_action(self, before, timeout=5.0):
         acts = wait_for(lambda: self.mock.pointer_actions()[before:], timeout)
         self.assertTrue(acts, "no pointer action was sent")
@@ -811,7 +825,7 @@ class UsbTests(unittest.TestCase):
         self.assertIsNone(usb.explain("x INFO Trying again over a no-root userspace tunnel (tunneld)"))
         self.assertIsNone(usb.explain(""))
 
-    def _bring_up(self, version):
+    def _bring_up(self, version, wda_version=usb.WDA_RUNNER_VERSION, ready=True):
         calls, spawned = [], []
 
         def fake_pmd3(*args, timeout=60, cancel=None):
@@ -830,8 +844,8 @@ class UsbTests(unittest.TestCase):
 
         with mock.patch.object(usb, "pmd3", fake_pmd3), \
                 mock.patch.object(usb, "usbmuxd_reachable", return_value=True), \
-                mock.patch.object(usb, "free_port", return_value=18100), \
-                mock.patch.object(usb, "wda_ready", side_effect=lambda url, timeout=2.0: url is not None), \
+                mock.patch.object(usb, "probe_wda", return_value=({"build": {"version": wda_version}}, ready)), \
+                mock.patch.object(usb.UsbSession, "read_log", return_value="ICAST_USB_FORWARD_PORT=18100\n"), \
                 mock.patch.object(usb.UsbSession, "_spawn", fake_spawn):
             session = usb.UsbSession()
             url = session.bring_up()
@@ -843,11 +857,57 @@ class UsbTests(unittest.TestCase):
             self.assertEqual(url, "http://127.0.0.1:18100")
             self.assertEqual([c[0] for c in calls], ["usbmux"] + (["amfi"] if dev_mode else []) + ["mounter", "apps"])
             self.assertIn(["mounter", "auto-mount", "--udid", "UDID1"], calls)
-            runner = ["developer", "dvt", "xcuitest", "com.facebook.WebDriverAgentRunner.xctrunner", "--udid", "UDID1"]
+            runner = ["developer", "dvt", "xcuitest", "com.facebook.WebDriverAgentRunner.xctrunner",
+                      "--udid", "UDID1", "--env", "USE_IP=127.0.0.1", "--env", "USE_PORT=8100"]
             self.assertEqual(spawned, [
                 ("wda_runner", runner + (["--userspace"] if userspace else [])),
-                ("wda_forward", ["usbmux", "forward", "18100", "8100", "--udid", "UDID1"]),
+                ("wda_forward", ["UDID1", "8100"]),
             ])
+
+    def test_bring_up_rejects_unsupported_runner(self):
+        for ready in (True, False):
+            with self.subTest(ready=ready), self.assertRaises(usb.UsbError) as cm:
+                self._bring_up("17.5.1", wda_version="1.0", ready=ready)
+            self.assertIn("com.facebook.WebDriverAgentRunner.xctrunner", str(cm.exception))
+            self.assertIn("Port 8100 reported version '1.0'", str(cm.exception))
+            self.assertIn("If the selected bundle is an old copy, remove it", str(cm.exception))
+
+    def test_expired_runner_error_names_the_selected_bundle(self):
+        session = usb.UsbSession()
+        session.bundle = "com.example.WebDriverAgentRunner.old"
+        process = mock.Mock(poll=mock.Mock(return_value=1))
+        session.procs.append(("wda_runner", process, None))
+        with self.assertRaises(usb.UsbError) as cm:
+            with mock.patch.object(session, "read_log", return_value="The application signature has expired"):
+                session.check()
+        self.assertIn(session.bundle, str(cm.exception))
+        self.assertIn(usb.MSG_EXPIRED, str(cm.exception))
+
+    def test_forward_readiness_is_isolated_between_sessions(self):
+        def spawn(args, *, script, stdout, stderr):
+            stdout.write(f"ICAST_USB_FORWARD_PORT={args[0]}\n")
+            stdout.flush()
+            return mock.Mock(poll=mock.Mock(return_value=0))
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(usb, "APP_DIR", Path(tmp)), \
+                mock.patch.object(usb, "_popen", side_effect=spawn):
+            archive = Path(tmp) / "wda_forward.log"
+            archive.write_text("ICAST_USB_FORWARD_PORT=18000\n", encoding="utf-8")
+            first, second = usb.UsbSession(), usb.UsbSession()
+            try:
+                self.assertEqual(first.read_log("wda_forward"), "")
+                first._spawn("wda_forward", ["18001"])
+                second._spawn("wda_forward", ["18002"])
+                self.assertIn("ICAST_USB_FORWARD_PORT=18001", first.read_log("wda_forward"))
+                self.assertIn("ICAST_USB_FORWARD_PORT=18002", second.read_log("wda_forward"))
+                first.close()
+                self.assertEqual(first.read_log("wda_forward"), "")
+                self.assertIn("ICAST_USB_FORWARD_PORT=18002", second.read_log("wda_forward"))
+            finally:
+                first.close()
+                second.close()
+            self.assertIn("ICAST_USB_FORWARD_PORT=18002", archive.read_text(encoding="utf-8"))
+            self.assertEqual(list(Path(tmp).iterdir()), [archive])
 
     def test_close_cancels_bring_up(self):
         def slow_pmd3(*args, timeout=60, cancel=None):
@@ -899,7 +959,7 @@ class UsbTests(unittest.TestCase):
         """Every command we run must parse: pymobiledevice3 rejects unknown options (exit 2)
         before it handles --help (exit 0)."""
         _, calls, spawned = self._bring_up("17.5.1")
-        commands = calls + [args for _, args in spawned] + [
+        commands = calls + [args for name, args in spawned if name == "wda_runner"] + [
             ["usbmux", "list", "--usb", "--simple"],
             ["amfi", "reveal-developer-mode", "--udid", "UDID1"],
         ]
@@ -985,6 +1045,15 @@ class CliTests(unittest.TestCase):
         self.assertIn("[FAIL] Apple's USB service", out)
         self.assertIn("Apple Devices", out)
         self.assertIn(f"[OK]   WebDriverAgent answers at {self.mock.url} (iPhone Wi-Fi address 10.0.0.2)", out)
+
+    def test_doctor_reports_wda_that_answers_but_is_not_ready(self):
+        self.mock.status_value = {"ready": False}
+        with mock.patch.object(cli, "_check_usb", return_value=False), \
+                mock.patch.object(cli, "DEFAULT_URL", self.mock.url):
+            code, out = self.run_cli("doctor")
+        self.assertEqual(code, 1)
+        self.assertIn("reports it is unavailable for control", out)
+        self.assertNotIn("so control works", out)
 
     def test_doctor_all_good(self):
         dev = {"Identifier": "UDID1", "DeviceName": "Test iPhone", "ProductVersion": "17.5.1", "ProductType": "iPhone15,2"}

@@ -55,7 +55,7 @@ def parse_args():
         f"separate settings file",
     )
     p.add_argument("--port", type=int, help=f"RTSP port (default {net.PORT}, or {LOCAL_PORT} with --local)")
-    p.add_argument("--control", action="store_true", help="start iPhone control (USB / WebDriverAgent) at launch")
+    p.add_argument("--control", action="store_true", help="start USB control once mirroring begins")
     p.add_argument("--grab", metavar="DIR", help="self-test: save a PNG of the window every 2 s")
     p.add_argument("--quit-after", type=float, default=0, help="self-test: exit after N seconds")
     return p.parse_args()
@@ -100,6 +100,7 @@ def main():
     # Controller.on_state runs on the control thread: hand it to the GUI thread via a queued signal
     ctrl = Controller(on_state=lambda state, message: bridge.control.emit(state, message))
     win = PhoneWindow(settings, None, ctrl)
+    win.auto_control = args.control
     rx = Receiver(
         settings,
         on_frame=bridge.post_frame,
@@ -116,8 +117,6 @@ def main():
     win.show()
     win._update_target()
     rx.start()
-    if args.control:
-        ctrl.start()
     if args.grab:
         grab_dir = Path(args.grab)
         grab_dir.mkdir(parents=True, exist_ok=True)

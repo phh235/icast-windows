@@ -112,7 +112,8 @@ def _check_usb():
     for dev in devices:
         ok(f"iPhone on USB: {_device_line(dev)}")
     if len(devices) > 1:
-        warn("Several iPhones are connected; control uses the first one.")
+        fail("Several iPhones are connected", "Connect only the iPhone you want to control by USB.")
+        return False
     dev = devices[0]
     udid = dev.get("Identifier") or dev.get("UniqueDeviceID")
     ios = usb.parse_version(dev.get("ProductVersion"))
@@ -146,13 +147,12 @@ def _check_usb():
 
 
 def _check_wda(url):
-    try:
-        with WDA(url, timeout=2) as wda:
-            status = wda.status(timeout=2)
-    except (WDAError, ValueError):
-        status = None
+    status, ready = usb.probe_wda(url)
     if not status:
         note(f"WebDriverAgent is not answering at {url}", ADVICE_NOT_RUNNING)
+        return False
+    if not ready:
+        warn(f"WebDriverAgent at {url} reports it is unavailable for control")
         return False
     ip = (status.get("ios") or {}).get("ip") if isinstance(status.get("ios"), dict) else None
     ok(f"WebDriverAgent answers at {url}" + (f" (iPhone Wi-Fi address {ip})" if ip else ""))

@@ -209,17 +209,16 @@ environment).
    ```
 
    and fix whatever it reports until all checks pass.
-7. **Turn control on.** In the iCast window press **Ctrl + U**, click the hand
+7. **Turn control on.** Start mirroring the iPhone connected by USB. In the iCast
+   window press **Ctrl + U**, click the hand
    button in the top bar, or right-click > **Control iPhone (USB)**. The button pulses orange
    while WDA starts (the first time also downloads and mounts the Developer Disk Image, which
    can take a minute) and turns green when it is ready.
 
-WebDriverAgent listens on port 8100 of the iPhone, and that port is reachable over Wi-Fi as
-well as through the USB forward. When you turn control on, the app first looks for a WDA
-that is already running, both on the USB forward and on the iPhone's Wi-Fi address, and only
-starts a new one over USB if it finds none. So once WDA is up, control traffic can go over
-Wi-Fi too. Keep the cable connected anyway while you work: WDA lives only as long as the test
-session that launched it, and unplugging the cable usually ends that session.
+iCast starts the supported WDA runner with its listener bound to the iPhone's loopback
+address and opens a PC loopback forward over USB. It checks that the USB iPhone is the
+one sending the mirror before enabling input. Switching or stopping the mirror ends control.
+Keep the cable connected while you use control.
 
 ### Helper commands
 
@@ -236,7 +235,8 @@ command for its options):
 | `home` | Go to the Home Screen |
 | `type TEXT` | Type TEXT into the focused field (`\n` = Return, `\b` = Backspace) |
 
-`tap`, `home` and `type` talk to `http://127.0.0.1:8100` unless you pass `--url`.
+`tap`, `home` and `type` default to `http://127.0.0.1:8100`. When you start WDA with
+iCast's `start` command, pass its printed loopback URL with `--url`.
 
 ## Troubleshooting
 
@@ -360,7 +360,7 @@ run next to a normal copy of the app. Other options:
 | Option | Meaning |
 |---|---|
 | `--port N` | RTSP port (default 7000, or 7100 with `--local`) |
-| `--control` | Turn on iPhone control (USB / WebDriverAgent) at launch |
+| `--control` | Turn on USB control when the first mirror begins |
 | `--grab DIR` | Save a PNG of the window every 2 seconds |
 | `--quit-after N` | Exit after N seconds |
 
