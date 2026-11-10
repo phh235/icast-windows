@@ -1,5 +1,7 @@
 # iCast
 
+**English** · [Tiếng Việt](README.vi.md) · [简体中文](README.zh-CN.md)
+
 Mirror and control your iPhone on Windows.
 
 Maintained by **phh235**.
@@ -58,6 +60,48 @@ You can add USB control later by running `install.bat` again.
 If you move the folder later, run `install.bat` again so the shortcuts point to the new
 location. `run.bat` starts the app without a shortcut, and `control.bat` runs the USB
 control helper (see below).
+
+### Setup with an agent
+
+Paste this prompt into an agent with terminal access to your Windows PC. Change the mode
+to `mirror-and-usb` if you also want mouse and keyboard control.
+
+~~~text
+Set up iCast on this Windows PC in mirror-only mode.
+Get the source from https://github.com/phh235/icast-windows. Reuse a local copy if present.
+Otherwise choose a permanent folder under my user profile, such as %USERPROFILE%\Projects,
+and run this command there.
+git clone https://github.com/phh235/icast-windows.git
+If Git is unavailable, download and extract the source ZIP.
+https://github.com/phh235/icast-windows/archive/refs/heads/main.zip
+Open the downloaded project folder, read README.md, and run the following steps from there.
+
+1. Check that Python 3.11+ is available as python.exe on PATH. If needed, install it from
+   an official source, refresh PATH, and verify the version. Reuse an existing iCast setup
+   where possible and preserve my settings.
+2. Run the matching installer command. Redirecting input from NUL lets the installer
+   exit without waiting for a keypress.
+   cmd.exe /d /c "install.bat --mirror-only < NUL"
+   cmd.exe /d /c "install.bat < NUL"
+   Check the exit code, then run -m pip check with %LOCALAPPDATA%\iCast\venv\Scripts\python.exe.
+3. Start iCast with .\run.bat and check that it is listening using the window or the
+   current startup entries in %LOCALAPPDATA%\iCast\icast.log. Ask me to approve private
+   network access if Windows prompts and select the receiver in iPhone Screen Mirroring.
+4. For mirror-and-usb, set up the missing USB prerequisites using the links in this README.
+   Ask me to approve any Windows elevation prompt. Run .\control.bat doctor and address
+   the first failed check. If WDA needs to be installed or renewed, run
+   .\control.bat get-wda and give me the exact IPA path. Hand off the steps that need me:
+   connecting or unlocking the iPhone, tapping Trust, signing in and signing the IPA in
+   Sideloadly, or enabling Developer Mode. Use .\control.bat reveal-dev-mode if needed.
+   After I confirm, rerun doctor. Once mirroring is active, turn on USB control with Ctrl+U
+   and check that the button turns green.
+5. Complete every step you can from the terminal. When you need my action, tell me exactly
+   what to do, wait for confirmation, then resume. Report what was installed, what you
+   verified, and any remaining blocker.
+~~~
+
+Enter Apple Account credentials, verification codes and the iPhone passcode directly in
+Sideloadly or on the device. [USB setup details](#usb-control-optional)
 
 ## Usage
 
