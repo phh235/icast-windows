@@ -85,6 +85,7 @@ Rê chuột lên cửa sổ để hiện thanh điều khiển. Thanh này hiể
 | `Ctrl` + cuộn chuột hoặc `Ctrl` + `+` / `-` | Đổi kích thước cửa sổ |
 | `Ctrl` + `M` | Tắt hoặc bật âm thanh trên máy tính |
 | `Ctrl` + `U` | Bật hoặc tắt điều khiển qua USB |
+| `Ctrl` + `V` | Dán văn bản từ clipboard Windows vào ô đang chọn trên iPhone khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `H` | Về Màn hình chính khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `J` | Mở Bộ chuyển đổi ứng dụng trên iPhone có nút Home khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `↑` / `↓` | Tăng hoặc giảm âm lượng iPhone khi điều khiển USB đã sẵn sàng |

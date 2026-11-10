@@ -7,8 +7,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from PySide6.QtCore import QPoint
-from PySide6.QtGui import QContextMenuEvent, QImage
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QContextMenuEvent, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -76,6 +76,21 @@ class WindowControlsTests(unittest.TestCase):
         self.assertIn("Received video: 590 × 1280 px", info)
         self.assertIn("Display area: 460 × 1000 px", info)
         self.assertIn("Displayed frame rate: 58 fps", info)
+
+    def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
+        self.window.ctrl = mock.Mock()
+        press = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)
+        repeat = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier, "", True)
+        with mock.patch.object(ui, "QApplication") as app:
+            app.clipboard.return_value.text.return_value = "Text to paste"
+            self.window.keyPressEvent(press)
+            app.clipboard.assert_not_called()
+            self.window.control_state = ui.READY
+            self.window.keyPressEvent(press)
+            self.window.keyPressEvent(repeat)
+            app.clipboard.assert_called_once_with()
+        self.window._flush_type()
+        self.window.ctrl.type_text.assert_called_once_with("Text to paste")
 
 
 if __name__ == "__main__":

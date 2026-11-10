@@ -170,6 +170,7 @@ line from its start to its end.
 | Ctrl + Up / Ctrl + Down | iPhone volume up / down |
 | Ctrl + M | Mute / unmute the sound on the PC |
 | Ctrl + U | Turn USB control on / off |
+| Ctrl + V | Paste Windows clipboard text into the focused iPhone field while USB control is ready |
 | Ctrl + Plus / Ctrl + Minus | Resize the window |
 
 Home, App Switcher and iPhone volume act on the phone while control is ready.

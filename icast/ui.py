@@ -62,7 +62,7 @@ ZOOM_PER_NOTCH = 1.06
 ZOOM_MS = 30
 
 # Windows virtual-key codes: shortcuts must also work with non-Latin keyboard layouts
-VK_H, VK_J, VK_M, VK_U = 0x48, 0x4A, 0x4D, 0x55
+VK_H, VK_J, VK_M, VK_U, VK_V = 0x48, 0x4A, 0x4D, 0x55, 0x56
 VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT = 0xBB, 0xBD, 0x6B, 0x6D
 
 GREEN, ORANGE, RED = QColor("#30d158"), QColor("#ff9f0a"), QColor("#ff453a")
@@ -993,6 +993,13 @@ class PhoneWindow(QWidget):
                 self._toggle_mute()
             elif is_key(e, (Qt.Key_U,), (VK_U,)):
                 self._toggle_control()
+            elif is_key(e, (Qt.Key_V,), (VK_V,)):
+                if self._control_ready():
+                    text = QApplication.clipboard().text()
+                    if text:
+                        self._type(text)
+                else:
+                    self._hint("Enable USB control to paste")
             else:
                 super().keyPressEvent(e)
             return
