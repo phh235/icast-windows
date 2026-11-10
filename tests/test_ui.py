@@ -186,6 +186,14 @@ class WindowControlsTests(unittest.TestCase):
         apply_flags.assert_not_called()
         show.assert_not_called()
 
+    def test_pin_and_quit_shortcuts_trigger_once_per_press(self):
+        with mock.patch.object(self.window, "_button") as button:
+            for key in (Qt.Key_T, Qt.Key_Q):
+                self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.ControlModifier))
+                self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.ControlModifier, "", True))
+                self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, key, Qt.ControlModifier | Qt.ShiftModifier))
+        self.assertEqual(button.call_args_list, [mock.call("pin"), mock.call("close")])
+
     def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
         self.window.ctrl = mock.Mock()
         press = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)

@@ -66,7 +66,8 @@ ZOOM_PER_NOTCH = 1.06
 ZOOM_MS = 30
 
 # Windows virtual-key codes: shortcuts must also work with non-Latin keyboard layouts
-VK_1, VK_C, VK_H, VK_J, VK_M, VK_U, VK_V = 0x31, 0x43, 0x48, 0x4A, 0x4D, 0x55, 0x56
+VK_1, VK_C, VK_H, VK_J, VK_M = 0x31, 0x43, 0x48, 0x4A, 0x4D
+VK_Q, VK_T, VK_U, VK_V = 0x51, 0x54, 0x55, 0x56
 VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT = 0xBB, 0xBD, 0x6B, 0x6D
 
 GREEN, ORANGE, RED = QColor("#30d158"), QColor("#ff9f0a"), QColor("#ff453a")
@@ -1015,7 +1016,8 @@ class PhoneWindow(QWidget):
                 STARTING: "iPhone control is starting - click to cancel (Ctrl+U)",
                 ERROR: "iPhone control failed - click to try again (Ctrl+U)",
             }.get(self.control_state, "Control iPhone over USB (Ctrl+U)")
-        return {"home": "Home (Ctrl+H)", "pin": "Always on top", "min": "Minimize", "close": "Close"}[name]
+        return {"home": "Home (Ctrl+H)", "pin": "Always on top (Ctrl+T)",
+                "min": "Minimize", "close": "Quit iCast (Ctrl+Q)"}[name]
 
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
@@ -1135,6 +1137,10 @@ class PhoneWindow(QWidget):
                 self._phone("app_switcher")
             elif is_key(e, (Qt.Key_M,), (VK_M,)):
                 self._toggle_mute()
+            elif mods == Qt.ControlModifier and is_key(e, (Qt.Key_T,), (VK_T,)):
+                self._button("pin")
+            elif mods == Qt.ControlModifier and is_key(e, (Qt.Key_Q,), (VK_Q,)):
+                self._button("close")
             elif is_key(e, (Qt.Key_U,), (VK_U,)):
                 self._toggle_control()
             elif is_key(e, (Qt.Key_1,), (VK_1,)):
@@ -1177,7 +1183,7 @@ class PhoneWindow(QWidget):
             a = m.addAction(label, lambda method=method, args=args: self._phone(method, *args))
             a.setEnabled(ready)
         m.addSeparator()
-        top = QAction("Always on Top", m, checkable=True, checked=self.settings.get("always_on_top", True))
+        top = QAction("Always on Top\tCtrl+T", m, checkable=True, checked=self.settings.get("always_on_top", True))
         top.triggered.connect(lambda: self._button("pin"))
         m.addAction(top)
         snd = QAction("Sound\tCtrl+M", m, checkable=True, checked=not (self.rx and self.rx.muted))
@@ -1204,7 +1210,7 @@ class PhoneWindow(QWidget):
         m.addAction("Connection Diagnostics...", self._show_diagnostics)
         m.addAction("Open Log", self._open_log)
         m.addSeparator()
-        m.addAction("Quit", QApplication.quit)
+        m.addAction("Quit\tCtrl+Q", QApplication.quit)
         m.exec(e.globalPos())
 
     def _add_video_menu(self, menu, title, keys, choices):

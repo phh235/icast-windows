@@ -84,6 +84,8 @@ Rê chuột lên cửa sổ để hiện thanh điều khiển. Thanh này hiể
 | Nhấp đúp khi tắt điều khiển USB | Đổi giữa kích thước lớn và thông thường |
 | `Ctrl` + cuộn chuột hoặc `Ctrl` + `+` / `-` | Đổi kích thước cửa sổ |
 | `Ctrl` + `M` | Tắt hoặc bật âm thanh trên máy tính |
+| `Ctrl` + `T` | Bật hoặc tắt ghim cửa sổ luôn nổi |
+| `Ctrl` + `Q` | Thoát iCast |
 | `Ctrl` + `U` | Bật hoặc tắt điều khiển qua USB |
 | `Ctrl` + `V` | Dán văn bản từ clipboard Windows vào ô đang chọn trên iPhone khi điều khiển USB đã sẵn sàng |
 | `F11` / `Esc` | Bật tắt toàn màn hình / trở lại cửa sổ |

@@ -169,6 +169,8 @@ line from its start to its end.
 | Ctrl + J | App Switcher on iPhones with a Home button |
 | Ctrl + Up / Ctrl + Down | iPhone volume up / down |
 | Ctrl + M | Mute / unmute the sound on the PC |
+| Ctrl + T | Toggle Always on Top |
+| Ctrl + Q | Quit iCast |
 | Ctrl + U | Turn USB control on / off |
 | Ctrl + V | Paste Windows clipboard text into the focused iPhone field while USB control is ready |
 | F11 / Esc | Toggle full screen / return to the windowed view |
