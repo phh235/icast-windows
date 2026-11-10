@@ -17,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from icast.airplay import Connection, Receiver, Response  # noqa: E402
 from icast.config import Settings  # noqa: E402
 from icast.video import MirrorStream, VideoDecoder  # noqa: E402
+from tools.fake_iphone import Rtsp  # noqa: E402
+from tools.gen_fairplay import gen_garble  # noqa: E402
 
 
 class VideoLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -130,6 +132,28 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(len(settings.mac_bytes), 6)
             self.assertEqual(len(bytes.fromhex(settings["ed25519_seed"])), 32)
             self.assertEqual(Settings(path).data, settings.data)
+
+
+class ToolAndAudioTests(unittest.TestCase):
+    def test_generator_accepts_arithmetic_and_rejects_python_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lib = Path(tmp)
+            src = lib / "playfair" / "hand_garble.c"
+            src.parent.mkdir()
+            src.write_text("void garble() { unsigned int tmp; tmp=1; buffer0[0]=rol8(tmp, 2); }")
+            compile(gen_garble(lib), "<generated>", "exec")
+            src.write_text('void garble() { buffer0[0]=__import__("os").system("example"); }')
+            with self.assertRaisesRegex(SystemExit, "unsupported FairPlay"):
+                gen_garble(lib)
+
+    def test_simulator_treats_early_eof_as_an_error(self):
+        client = object.__new__(Rtsp)
+        client.cseq = 0
+        header = b"RTSP/1.0 200 OK\r\nCSeq: 1\r\nContent-Length: 2\r\n\r\n"
+        client.s = mock.Mock()
+        client.s.recv.side_effect = [bytes([b]) for b in header] + [b"x", b""]
+        with self.assertRaisesRegex(ConnectionError, "truncated"):
+            client.request("GET", "/info")
 
 
 class ReceiverShutdownTests(unittest.TestCase):

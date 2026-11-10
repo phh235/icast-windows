@@ -13,7 +13,9 @@ the straight-line garble() body is translated statement by statement.
 
 Usage:  python tools/gen_fairplay.py <path-to-UxPlay/lib>
 """
+import ast
 import base64
+import keyword
 import re
 import struct
 import sys
@@ -23,6 +25,32 @@ ROOT = Path(__file__).resolve().parent.parent
 OUT_DIR = ROOT / "icast" / "fairplay"
 
 NUM = re.compile(r"0[xX][0-9a-fA-F]+|\d+")
+BUFFERS = {f"buffer{i}" for i in range(5)}
+HELPERS = {"_L", "rol8", "rol8x", "weird_ror8", "weird_rol8", "weird_rol32"}
+ARITHMETIC_NODES = (
+    ast.Expression, ast.Load, ast.BinOp, ast.UnaryOp,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.Mod, ast.BitAnd, ast.BitOr, ast.BitXor,
+    ast.LShift, ast.RShift, ast.Invert, ast.USub, ast.UAdd,
+)
+
+
+def validate_expression(rhs, variables):
+    try:
+        expression = ast.parse(rhs, mode="eval")
+    except SyntaxError:
+        raise SystemExit("invalid FairPlay arithmetic expression") from None
+    for node in ast.walk(expression):
+        if isinstance(node, ARITHMETIC_NODES):
+            continue
+        if isinstance(node, ast.Constant) and type(node.value) is int:
+            continue
+        if isinstance(node, ast.Name) and node.id in variables | BUFFERS | HELPERS:
+            continue
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in HELPERS and not node.keywords:
+            continue
+        if isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id in BUFFERS:
+            continue
+        raise SystemExit("unsupported FairPlay arithmetic expression")
 
 
 def parse_arrays(src: str) -> dict:
@@ -142,15 +170,21 @@ def gen_garble(lib: Path):
         s = " ".join(s.split())
         if s.startswith("unsigned int"):
             for v in s[len("unsigned int"):].split(","):
-                variables.add(v.strip())
+                name = v.strip()
+                if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*", name) or keyword.iskeyword(name) or name in BUFFERS | HELPERS:
+                    raise SystemExit("invalid FairPlay variable declaration")
+                variables.add(name)
             continue
         a = assign.match(s)
         if not a:
             raise SystemExit(f"cannot translate: {s}")
         lhs, op, rhs = a.groups()
         rhs = lit.sub(r"_L(\1)", rhs)
+        validate_expression(rhs, variables)
         if "[" in lhs:
             name, idx = lhs.split("[")
+            if name not in BUFFERS:
+                raise SystemExit("invalid FairPlay buffer")
             lhs_py = f"{name}[{idx[:-1]}]"
             out.append(f"    {lhs_py} {op}= {rhs}")
         else:
@@ -161,17 +195,21 @@ def gen_garble(lib: Path):
             else:
                 out.append(f"    {lhs} = _U({rhs})")
         count += 1
-    (OUT_DIR / "_garble.py").write_text("\n".join(out) + "\n", encoding="utf-8")
     print(f"garble ok: {count} statements, vars={sorted(variables)}")
+    generated = "\n".join(out) + "\n"
+    compile(generated, "_garble.py", "exec")
+    return generated
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:
         raise SystemExit(__doc__)
     lib = Path(sys.argv[1])
+    garble = gen_garble(lib)
+    license_text = (lib / "playfair" / "LICENSE.md").read_text()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     gen_tables(lib)
-    gen_garble(lib)
+    (OUT_DIR / "_garble.py").write_text(garble, encoding="utf-8")
     lic = ROOT / "licenses"
     lic.mkdir(exist_ok=True)
-    (lic / "playfair-LICENSE.md").write_text((lib / "playfair" / "LICENSE.md").read_text(), encoding="utf-8")
+    (lic / "playfair-LICENSE.md").write_text(license_text, encoding="utf-8")

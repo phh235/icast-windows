@@ -18,7 +18,6 @@ import time
 from pathlib import Path
 
 import av
-import numpy as np
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey, X25519PublicKey
@@ -27,11 +26,12 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 ROOT = Path(__file__).resolve().parent.parent
 RAW = dict(encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw)
 W, H = 590, 1280  # portrait, iPhone-like aspect
+MAX_RTSP_REPLY = 64 * 1024
 
 
 class Rtsp:
     def __init__(self, host, port):
-        self.s = socket.create_connection((host, port))
+        self.s = socket.create_connection((host, port), timeout=10)
         self.host = host
         self.cseq = 0
 
@@ -43,13 +43,25 @@ class Rtsp:
         for k, v in (headers or {}).items():
             lines.append(f"{k}: {v}")
         lines.append(f"Content-Length: {len(body)}")
+        self.s.settimeout(10)
         self.s.sendall(("\r\n".join(lines) + "\r\n\r\n").encode() + body)
-        head = b""
-        while b"\r\n\r\n" not in head:
-            chunk = self.s.recv(1)
+        deadline = time.monotonic() + 10
+
+        def receive(size):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("RTSP reply timed out")
+            self.s.settimeout(remaining)
+            chunk = self.s.recv(size)
             if not chunk:
-                raise ConnectionError("closed")
-            head += chunk
+                raise ConnectionError("truncated RTSP reply")
+            return chunk
+
+        head = bytearray()
+        while not head.endswith(b"\r\n\r\n"):
+            if len(head) >= MAX_RTSP_REPLY:
+                raise ValueError("oversized RTSP reply header")
+            head.extend(receive(1))
         text = head.decode()
         status = int(text.split(" ")[1])
         hdrs = {}
@@ -58,12 +70,14 @@ class Rtsp:
                 k, v = line.split(":", 1)
                 hdrs[k.strip().lower()] = v.strip()
         n = int(hdrs.get("content-length", 0))
-        data = b""
+        if not 0 <= n <= MAX_RTSP_REPLY:
+            raise ValueError("invalid RTSP reply length")
+        data = bytearray()
         while len(data) < n:
-            data += self.s.recv(n - len(data))
+            data.extend(receive(n - len(data)))
         assert status == 200, f"{method} {url} -> {status}"
         assert hdrs.get("cseq") == str(self.cseq), "CSeq mismatch"
-        return hdrs, data
+        return hdrs, bytes(data)
 
 
 def h264_encoder():
@@ -103,6 +117,8 @@ def split_annexb(data: bytes):
 
 
 def test_frame(i):
+    import numpy as np
+
     y, x = np.mgrid[0:H, 0:W]
     t = i / 30
     img = np.zeros((H, W, 3), np.uint8)
@@ -115,6 +131,8 @@ def test_frame(i):
 
 
 def main():
+    import numpy as np
+
     host = sys.argv[1] if len(sys.argv) > 1 else "127.0.0.1"
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 7000
     seconds = float(sys.argv[3]) if len(sys.argv) > 3 else 8
