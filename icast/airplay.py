@@ -6,6 +6,7 @@ import plistlib
 import struct
 import threading
 import time
+from collections import Counter
 from concurrent.futures import Future, InvalidStateError
 from contextlib import suppress
 
@@ -20,6 +21,26 @@ log = logging.getLogger(__name__)
 SERVER = f"AirTunes/{discovery.SRCVERS}"
 NTP_EPOCH = 2208988800
 RTSP_CLOSE_TIMEOUT = 0.5
+RTSP_BODY_LIMIT = 64 * 1024
+RTSP_CONNECTION_LIMIT = 8
+PLIST_PARSE_BUDGET = 4 * 1024 * 1024
+
+
+def _read_plist(data):
+    if data.startswith(b"bplist00"):
+        if len(data) < 40:
+            raise ValueError("truncated binary plist")
+        offset_size, ref_size, count, root, table = struct.unpack(">6xBBQQQ", data[-32:])
+        # Bound work even if distinct offsets describe overlapping encoded objects.
+        if (not 1 <= offset_size <= 8 or not 1 <= ref_size <= 8 or not 0 <= root < count
+                or not 8 <= table <= len(data) - 32 or table + count * offset_size > len(data) - 32
+                or count > 512 or count * len(data) > PLIST_PARSE_BUDGET):
+            raise ValueError("binary plist exceeds the parsing budget")
+        offsets = {int.from_bytes(data[i:i + offset_size], "big")
+                   for i in range(table, table + count * offset_size, offset_size)}
+        if len(offsets) != count or any(not 8 <= offset < table for offset in offsets):
+            raise ValueError("invalid binary plist offsets")
+    return plistlib.loads(data)
 
 
 def _bplist(obj) -> bytes:
@@ -117,6 +138,8 @@ class Connection:
                     break
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
+        except (ValueError, TimeoutError, asyncio.LimitOverrunError):
+            log.warning("invalid or incomplete RTSP request from %s", self.remote_ip)
         except Exception:
             log.exception("connection error")
         finally:
@@ -142,36 +165,46 @@ class Connection:
             return None
         lines = head.decode("utf-8", "replace").split("\r\n")
         parts = lines[0].split(" ")
-        if len(parts) < 3:
+        if len(parts) != 3 or not lines[0].isprintable():
             return None
         method, url, protocol = parts[0], parts[1], parts[2]
+        if protocol not in ("RTSP/1.0", "HTTP/1.1", "HTTP/1.0"):
+            return None
         headers = {}
         for line in lines[1:]:
             if ":" in line:
                 k, v = line.split(":", 1)
-                headers[k.strip().lower()] = v.strip()
-        n = int(headers.get("content-length", "0") or 0)
-        body = await self.reader.readexactly(n) if n else b""
+                key = k.strip().lower()
+                if key == "content-length" and key in headers:
+                    raise ValueError("duplicate RTSP Content-Length")
+                headers[key] = v.strip()
+        length = headers.get("content-length", "0")
+        if len(length) > 10 or not length.isascii() or not length.isdecimal() or int(length) > RTSP_BODY_LIMIT:
+            raise ValueError("invalid or oversized RTSP Content-Length")
+        n = int(length)
+        async with asyncio.timeout(10):
+            body = await self.reader.readexactly(n) if n else b""
         return Request(method, url, protocol, headers, body)
 
     async def _write(self, req: Request, resp: Response):
         out = [f"{req.protocol} {resp.status} {resp.reason}"]
         cseq = req.header("CSeq")
-        if cseq is not None:
+        if cseq is not None and len(cseq) <= 12 and cseq.isascii() and cseq.isdecimal():
             out.append(f"CSeq: {cseq}")
         out.append(f"Server: {SERVER}")
         for k, v in resp.headers:
             out.append(f"{k}: {v}")
         out.append(f"Content-Length: {len(resp.body)}")
         self.writer.write(("\r\n".join(out) + "\r\n\r\n").encode() + resp.body)
-        await self.writer.drain()
+        async with asyncio.timeout(10):
+            await self.writer.drain()
 
     async def _dispatch(self, req: Request) -> Response:
         path = req.url.split("?")[0]
         if req.method == "POST" and path == "/feedback":
-            log.debug("%s %s", req.method, req.url)
+            log.debug("%r %r", req.method, req.url)
         else:
-            log.info("%s %s (%d bytes)", req.method, req.url, len(req.body))
+            log.info("%r %r (%d bytes)", req.method, req.url, len(req.body))
         resp = Response()
         try:
             if req.method == "GET" and path == "/info":
@@ -203,7 +236,7 @@ class Connection:
             else:
                 log.warning("unhandled request %s %s", req.method, req.url)
         except Exception as e:
-            log.exception("error handling %s %s", req.method, req.url)
+            log.exception("error handling %r %r", req.method, req.url)
             resp = Response(500, "Internal Server Error")
             if isinstance(e, ValueError):
                 resp = Response(400, "Bad Request")
@@ -216,7 +249,7 @@ class Connection:
         res = {}
         if "application/x-apple-binary-plist" in ct and req.body:
             try:
-                q = plistlib.loads(req.body).get("qualifier") or []
+                q = _read_plist(req.body).get("qualifier") or []
             except Exception:
                 q = []
             if "txtAirPlay" in q:
@@ -287,25 +320,55 @@ class Connection:
 
     async def on_setup(self, req, resp):
         rx = self.rx
-        plist = plistlib.loads(req.body) if req.body else {}
+        plist = _read_plist(req.body) if req.body else {}
+        if not isinstance(plist, dict):
+            raise ValueError("invalid AirPlay setup")
+        streams = plist.get("streams", [])
+        if not isinstance(streams, list) or len(streams) > 4 or any(
+            not isinstance(s, dict) or type(s.get("type")) is not int or not 0 <= s["type"] <= 255
+            for s in streams
+        ):
+            raise ValueError("invalid AirPlay stream list")
+        kinds = {s["type"] for s in streams}
+        if len(kinds) != len(streams):
+            raise ValueError("duplicate AirPlay stream type")
+        for stream in streams:
+            kind = stream["type"]
+            if kind == 110:
+                sid = stream.get("streamConnectionID", 0)
+                if type(sid) is not int or not -(1 << 63) <= sid < (1 << 64):
+                    raise ValueError("invalid mirror stream ID")
+            elif kind == 96:
+                ct = stream.get("ct", 8)
+                if type(ct) is not int or not 0 <= ct <= 255:
+                    raise ValueError("invalid AirPlay audio codec")
         out = {}
         if "ekey" in plist and "eiv" in plist:
+            for field in ("name", "model", "osVersion"):
+                value = plist.get(field, "")
+                if not isinstance(value, str) or len(value) > 128 or any(c in value for c in "\r\n\0"):
+                    raise ValueError("invalid AirPlay device metadata")
+            ekey, eiv = plist["ekey"], plist["eiv"]
+            if not isinstance(ekey, bytes) or len(ekey) != 72 or not isinstance(eiv, bytes) or len(eiv) != 16:
+                raise ValueError("invalid AirPlay key or IV")
+            timing_port = plist.get("timingPort", 0)
+            if type(timing_port) is not int or not 0 <= timing_port <= 65535:
+                raise ValueError("invalid AirPlay timing port")
             self.client_name = plist.get("name") or "iPhone"
-            log.info("SETUP from %s (%s, %s)", self.client_name, plist.get("model"), plist.get("osVersion"))
+            log.info("SETUP from %r (%r, %r)", self.client_name, plist.get("model", ""), plist.get("osVersion", ""))
             rx.emit("connecting", name=self.client_name, ip=self.remote_ip, model=plist.get("model") or "",
                     os=plist.get("osVersion") or "")
             loop = asyncio.get_running_loop()
-            aeskey = await loop.run_in_executor(None, self.fairplay.decrypt, plist["ekey"])
+            aeskey = await loop.run_in_executor(None, self.fairplay.decrypt, ekey)
             if self.pairing.ecdh_secret is not None:
                 aeskey = hashlib.sha512(aeskey + self.pairing.ecdh_secret).digest()[:16]
-            self.aeskey, self.aesiv = aeskey, plist["eiv"]
+            self.aeskey, self.aesiv = aeskey, eiv
             if self.timing:
                 self.timing.stop()
             self.timing = TimingSender()
-            tport = await self.timing.start(self.remote_ip, int(plist.get("timingPort") or 0))
+            tport = await self.timing.start(self.remote_ip, timing_port)
             out["timingPort"] = tport
             out["eventPort"] = 0
-        streams = plist.get("streams")
         if streams:
             if self.aeskey is None:
                 raise ValueError("stream SETUP before key exchange")
@@ -353,7 +416,7 @@ class Connection:
         types = set()
         if req.body:
             try:
-                types = {s.get("type") for s in plistlib.loads(req.body).get("streams", [])}
+                types = {s.get("type") for s in _read_plist(req.body).get("streams", [])}
             except Exception:
                 pass
         resp.headers.append(("Connection", "close"))
@@ -397,6 +460,7 @@ class Receiver:
         self.advertiser = None
         self._mirror_owner = None
         self._mirror_lock = asyncio.Lock()
+        self._connections = Counter()
         self._thread = None
         self._server = None
         self._shutdown = Future()  # signaled by the GUI thread, awaited on the receiver loop
@@ -484,15 +548,23 @@ class Receiver:
 
     async def _main(self):
         async def handler(reader, writer):
-            if self._shutdown.done():
-                writer.close()
+            peer = writer.get_extra_info("peername")
+            if (self._shutdown.done() or not peer or self._connections[peer[0]] >= 3
+                    or sum(self._connections.values()) >= RTSP_CONNECTION_LIMIT):
+                writer.transport.abort()
                 return
-            await Connection(self, reader, writer).serve()
+            self._connections[peer[0]] += 1
+            try:
+                await Connection(self, reader, writer).serve()
+            finally:
+                self._connections[peer[0]] -= 1
+                if not self._connections[peer[0]]:
+                    del self._connections[peer[0]]
 
         try:
-            self._server = await asyncio.start_server(handler, host=net.BIND_HOST, port=net.PORT)
+            self._server = await asyncio.start_server(handler, host=net.BIND_HOST, port=net.PORT, limit=16384)
         except OSError:
-            self._server = await asyncio.start_server(handler, host=net.BIND_HOST, port=0)
+            self._server = await asyncio.start_server(handler, host=net.BIND_HOST, port=0, limit=16384)
         self.port = self._server.sockets[0].getsockname()[1]
         log.info("RTSP server listening on port %d", self.port)
         if not net.ADVERTISE:

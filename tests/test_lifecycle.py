@@ -2,6 +2,7 @@
 import asyncio
 import json
 import plistlib
+import struct
 import sys
 import tempfile
 import threading
@@ -14,7 +15,7 @@ import av
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from icast.airplay import Connection, Receiver, Response  # noqa: E402
+from icast.airplay import Connection, Receiver, Request, Response, RTSP_BODY_LIMIT, _read_plist  # noqa: E402
 from icast.config import Settings  # noqa: E402
 from icast.video import MirrorStream, VideoDecoder  # noqa: E402
 from tools.fake_iphone import Rtsp  # noqa: E402
@@ -132,6 +133,47 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(len(settings.mac_bytes), 6)
             self.assertEqual(len(bytes.fromhex(settings["ed25519_seed"])), 32)
             self.assertEqual(Settings(path).data, settings.data)
+
+
+class NetworkBoundaryTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.receiver = Receiver({"ed25519_seed": "ab" * 32}, mock.Mock(), mock.Mock())
+
+    def connection(self, ip="127.0.0.1"):
+        writer = mock.Mock(wait_closed=mock.AsyncMock())
+        writer.get_extra_info.return_value = (ip, 1)
+        return Connection(self.receiver, asyncio.StreamReader(), writer)
+
+    async def test_rtsp_rejects_lengths_before_waiting_for_body(self):
+        for length in (b"-1", str(RTSP_BODY_LIMIT + 1).encode(), b"1\r\nContent-Length: 2"):
+            with self.subTest(length=length):
+                conn = self.connection()
+                conn.reader.feed_data(b"SETUP * RTSP/1.0\r\nContent-Length: " + length + b"\r\n\r\n")
+                with self.assertRaises(ValueError):
+                    await asyncio.wait_for(conn._read_request(), 0.2)
+        conn = self.connection()
+        conn.reader.feed_data(b"SETUP * RTSP/1.0\r\nContent-Length: 2\r\n\r\nxx")
+        self.assertEqual((await conn._read_request()).body, b"xx")
+
+    async def test_setup_rejects_container_and_multiline_metadata(self):
+        conn = self.connection()
+        conn.fairplay.decrypt = mock.Mock()
+        for name in ([["nested"]], "forged\nline"):
+            with self.subTest(name=name), self.assertRaisesRegex(ValueError, "metadata"):
+                body = plistlib.dumps({"name": name, "ekey": bytes(72), "eiv": bytes(16)})
+                await conn.on_setup(Request("SETUP", "*", "RTSP/1.0", {}, body), Response())
+        conn.fairplay.decrypt.assert_not_called()
+        self.receiver.on_event.assert_not_called()
+
+    def test_binary_plist_budget_applies_before_parse(self):
+        alias = b"bplist00" + b"\x09\x08\x08" + struct.pack(">6xBBQQQ", 1, 1, 2, 0, 9)
+        costly = b"bplist00" + bytes(60000) + struct.pack(">6xBBQQQ", 1, 1, 100, 0, 59000)
+        with mock.patch("icast.airplay.plistlib.loads") as parse:
+            for payload in (alias, costly):
+                with self.subTest(length=len(payload)), self.assertRaises(ValueError):
+                    _read_plist(payload)
+            parse.assert_not_called()
+        self.assertEqual(_read_plist(plistlib.dumps({"name": "iPhone"}, fmt=plistlib.FMT_BINARY)), {"name": "iPhone"})
 
 
 class ToolAndAudioTests(unittest.TestCase):
