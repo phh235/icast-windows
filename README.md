@@ -172,6 +172,7 @@ line from its start to its end.
 | Ctrl + U | Turn USB control on / off |
 | Ctrl + V | Paste Windows clipboard text into the focused iPhone field while USB control is ready |
 | F11 / Esc | Toggle full screen / return to the windowed view |
+| Ctrl + 1 | Toggle Actual Pixels (1:1) |
 | Ctrl + Shift + C | Copy the current frame at its original resolution |
 | Ctrl + Plus / Ctrl + Minus | Resize the window |
 
@@ -196,6 +197,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Sound | Play the iPhone sound on the PC |
 | Size | Small, Medium or Large |
 | Full Screen / Exit Full Screen | Fit the iPhone view to the current display and keep its aspect ratio |
+| Actual Pixels (1:1) | Show one source pixel per display pixel when the original frame fits |
 | Resolution | Choose the requested resolution |
 | Frame Rate | Choose 30, 60 or experimental 120 FPS |
 | Save Screenshot | Save the current frame to `Pictures\iCast` |
@@ -354,6 +356,9 @@ Right-click and use **Resolution** (720p, 1080p or 1440p) and **Frame Rate** (30
 experimental 120 FPS) to set them independently. Reconnect Screen Mirroring to send the new
 request. **Stream Info...** shows the received resolution and displayed FPS, which depend
 on the video the iPhone sends.
+
+**Actual Pixels (1:1)** uses physical display pixels, including at fractional Windows
+scaling. Stream Info reports fit view if the original frame is too large for the display.
 
 `%LOCALAPPDATA%\iCast\settings.json` is created on the first start. Useful keys:
 

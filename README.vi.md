@@ -87,6 +87,7 @@ Rê chuột lên cửa sổ để hiện thanh điều khiển. Thanh này hiể
 | `Ctrl` + `U` | Bật hoặc tắt điều khiển qua USB |
 | `Ctrl` + `V` | Dán văn bản từ clipboard Windows vào ô đang chọn trên iPhone khi điều khiển USB đã sẵn sàng |
 | `F11` / `Esc` | Bật tắt toàn màn hình / trở lại cửa sổ |
+| `Ctrl` + `1` | Bật hoặc tắt Actual Pixels (1:1) |
 | `Ctrl` + `Shift` + `C` | Chép khung hình hiện tại ở độ phân giải gốc |
 | `Ctrl` + `H` | Về Màn hình chính khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `J` | Mở Bộ chuyển đổi ứng dụng trên iPhone có nút Home khi điều khiển USB đã sẵn sàng |
@@ -99,6 +100,8 @@ Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size
 **Stream Info...** hiện độ phân giải thực nhận, kích thước hiển thị và FPS. **Connection Diagnostics...** hiện trạng thái AirPlay và chạy phần kiểm tra USB.
 
 **Full Screen** phóng hình vừa màn hình hiện tại và giữ tỷ lệ iPhone. **Copy Screenshot** chép ảnh gốc vào clipboard Windows.
+
+**Actual Pixels (1:1)** hiển thị mỗi pixel nguồn bằng một pixel vật lý trên màn hình, kể cả khi Windows dùng scale 125% hoặc 150%. Nếu ảnh gốc quá lớn, **Stream Info...** sẽ báo iCast đang dùng chế độ vừa khung.
 
 ## Điều khiển qua USB
 

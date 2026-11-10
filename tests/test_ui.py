@@ -130,6 +130,50 @@ class WindowControlsTests(unittest.TestCase):
         self.assertEqual((image.width(), image.height()), (16, 24))
         self.assertEqual(image.pixelColor(0, 0).getRgb(), (30, 20, 10, 255))
 
+    def test_actual_pixels_renders_original_pixels_at_current_dpi(self):
+        width, height = 137, 241
+        frame = av.VideoFrame(width, height, "bgra")
+        plane = frame.planes[0]
+        dark, light = bytes((30, 10, 10, 255)), bytes((10, 10, 240, 255))
+        row = b"".join((dark, light)[x % 2] for x in range(width))
+        plane.update((row + bytes(plane.line_size - len(row))) * height)
+        self.window.rx = SimpleNamespace(decoder=SimpleNamespace(last_frame=frame))
+        self.window.show()
+        self.window.on_frame(frame.reformat(width=67, height=119, format="bgra"), width, height)
+        self.window._zoom_acc = 120
+        self.window._zoom_timer.start()
+        self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_1, Qt.ControlModifier))
+        self.app.processEvents()
+        self.assertTrue(self.window.actual_pixels)
+        self.assertFalse(self.window._zoom_timer.isActive())
+        self.assertIn("View: Actual Pixels (1:1)", self.window._stream_info())
+
+        for fullscreen in (False, True):
+            with self.subTest(fullscreen=fullscreen):
+                if fullscreen:
+                    self.window._toggle_fullscreen()
+                    self.app.processEvents()
+                self.assertEqual(self.window.rx.decoder.target, (width, height))
+                rect = self.window.phone_rect()
+                dpr = self.window.devicePixelRatioF()
+                self.assertAlmostEqual(rect.width() * dpr, width)
+                self.assertAlmostEqual(rect.height() * dpr, height)
+                self.assertAlmostEqual(rect.x() * dpr, round(rect.x() * dpr))
+                self.assertAlmostEqual(rect.y() * dpr, round(rect.y() * dpr))
+                rendered = self.window.grab().toImage()
+                x0, y0 = round(rect.x() * dpr), round(rect.y() * dpr)
+                self.assertEqual(rendered.pixelColor(x0 + 60, y0 + 100).getRgb(), (10, 10, 30, 255))
+                self.assertEqual(rendered.pixelColor(x0 + 61, y0 + 100).getRgb(), (240, 10, 10, 255))
+
+    def test_actual_pixels_keeps_fit_view_for_oversized_source(self):
+        self.window.src_size = (4000, 8000)
+        self.window.rx = SimpleNamespace(decoder=SimpleNamespace(last_frame=None))
+        original = self.window.size()
+        self.window._toggle_actual_pixels()
+        self.assertEqual(self.window.size(), original)
+        self.assertEqual(self.window.rx.decoder.target, self.window._display_size())
+        self.assertIn("View: Fit (source is too large for 1:1)", self.window._stream_info())
+
     def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
         self.window.ctrl = mock.Mock()
         press = QKeyEvent(QEvent.KeyPress, Qt.Key_V, Qt.ControlModifier)

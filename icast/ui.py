@@ -16,6 +16,7 @@ import time
 from collections import deque
 from pathlib import Path
 
+from av.error import FFmpegError
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QAction,
@@ -46,6 +47,7 @@ SHADOW = 22  # px around the phone for the drop shadow
 BAR = 40  # px above the phone for the hover bar
 DEFAULT_ASPECT = 1179 / 2556  # iPhone portrait
 WINDOW_SIZE_MAX = (1 << 24) - 1  # Qt's unconstrained QWidget size
+DPI_CHANGE = getattr(QEvent.Type, "DevicePixelRatioChange", None)
 RESOLUTIONS = (("720p", (1280, 720)), ("1080p", (1920, 1080)), ("1440p", (2560, 1440)))
 FRAME_RATES = (("30 FPS", (30,)), ("60 FPS", (60,)), ("120 FPS (Experimental)", (120,)))
 
@@ -64,7 +66,7 @@ ZOOM_PER_NOTCH = 1.06
 ZOOM_MS = 30
 
 # Windows virtual-key codes: shortcuts must also work with non-Latin keyboard layouts
-VK_C, VK_H, VK_J, VK_M, VK_U, VK_V = 0x43, 0x48, 0x4A, 0x4D, 0x55, 0x56
+VK_1, VK_C, VK_H, VK_J, VK_M, VK_U, VK_V = 0x31, 0x43, 0x48, 0x4A, 0x4D, 0x55, 0x56
 VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT = 0xBB, 0xBD, 0x6B, 0x6D
 
 GREEN, ORANGE, RED = QColor("#30d158"), QColor("#ff9f0a"), QColor("#ff453a")
@@ -149,6 +151,7 @@ class PhoneWindow(QWidget):
         self.settings = settings
         self.rx = receiver_ref  # set later by main
         self.ctrl = controller  # control.Controller (optional)
+        self.actual_pixels = False
         self.setWindowTitle(APP_NAME)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setMouseTracking(True)
@@ -221,7 +224,24 @@ class PhoneWindow(QWidget):
             flags |= Qt.WindowStaysOnTopHint
         self.setWindowFlags(flags)
 
+    def _native_size(self):
+        if not self.actual_pixels or self.src_size is None:
+            return None
+        dpr = self.devicePixelRatioF()
+        w, h = (pixels / dpr for pixels in self.src_size)
+        if self.isFullScreen():
+            available_w, available_h = self.width(), self.height()
+        else:
+            area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+            available_w, available_h = area.width() - 2 * SHADOW, area.height() - 2 * SHADOW - BAR
+        if w <= available_w and h <= available_h:
+            return w, h
+        return None
+
     def phone_size(self):
+        native = self._native_size()
+        if native is not None:
+            return native
         if self.isFullScreen():
             h = min(self.height(), self.width() / self.aspect)
             return max(1, round(h * self.aspect)), max(1, round(h))
@@ -236,8 +256,14 @@ class PhoneWindow(QWidget):
     def phone_rect(self) -> QRectF:
         w, h = self.phone_size()
         if self.isFullScreen():
-            return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
-        return QRectF(SHADOW, SHADOW + BAR, w, h)
+            x, y = (self.width() - w) / 2, (self.height() - h) / 2
+        else:
+            x, y = SHADOW, SHADOW + BAR
+        if self.actual_pixels:
+            # Keep the image origin on the physical pixel grid at fractional DPI.
+            dpr = self.devicePixelRatioF()
+            x, y = round(x * dpr) / dpr, round(y * dpr) / dpr
+        return QRectF(x, y, w, h)
 
     def corner_radius(self) -> float:
         w, h = self.phone_size()
@@ -247,15 +273,19 @@ class PhoneWindow(QWidget):
         if not self.isFullScreen():
             w, h = self.phone_size()
             center = self.geometry().center()
-            self.setFixedSize(w + 2 * SHADOW, h + 2 * SHADOW + BAR)
+            self.setFixedSize(math.ceil(w) + 2 * SHADOW, math.ceil(h) + 2 * SHADOW + BAR)
             if keep_center:
                 g = self.geometry()
                 g.moveCenter(center)
+                if self._native_size() is not None:
+                    area = (self.screen() or QApplication.primaryScreen()).availableGeometry()
+                    g.moveLeft(max(area.left(), min(g.x(), area.right() + 1 - g.width())))
+                    g.moveTop(max(area.top(), min(g.y(), area.bottom() + 1 - g.height())))
                 self.move(g.topLeft())
         self._update_target()
         self.update()
 
-    def _toggle_fullscreen(self):
+    def _reset_view_input(self):
         self._drop_tap()
         self._cancel_gesture()
         self.drag_offset = None
@@ -263,6 +293,9 @@ class PhoneWindow(QWidget):
         self._wheel_acc = 0.0
         self._zoom_timer.stop()
         self._zoom_acc = 0
+
+    def _toggle_fullscreen(self):
+        self._reset_view_input()
         self._hide_bar.stop()
         self._hover_btn = None
         if self.isFullScreen():
@@ -279,6 +312,29 @@ class PhoneWindow(QWidget):
             self._flash_bar(1.2)
         self._relayout()
 
+    def _toggle_actual_pixels(self):
+        self._reset_view_input()
+        self.actual_pixels = not self.actual_pixels
+        self._relayout()
+        if not self.actual_pixels:
+            self._hint("Fit view")
+        elif self.src_size is None:
+            self._hint("Actual Pixels enabled. Waiting for video.")
+        elif self._native_size() is None:
+            self._hint("Source is too large for 1:1. Using fit view.")
+        else:
+            # Show the cached original immediately, even if no new frame arrives.
+            frame = self.rx.decoder.last_frame if self.rx else None
+            if not self._has_native_image() and frame is not None and self.src_size == (frame.width, frame.height):
+                try:
+                    self._set_video_image(frame.reformat(format="bgra"))
+                except FFmpegError:
+                    log.warning("could not show the cached frame at native size")
+            self._hint("Actual Pixels (1:1)" if self._has_native_image() else "Waiting for a native-size frame")
+
+    def _has_native_image(self):
+        return self.image is not None and self.src_size == (self.image.width(), self.image.height())
+
     def _display_size(self):
         w, h = self.phone_size()
         dpr = self.devicePixelRatioF()
@@ -291,6 +347,7 @@ class PhoneWindow(QWidget):
     def set_phone_height(self, h):
         if self.isFullScreen():
             return
+        self.actual_pixels = False
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         self.phone_h = int(max(320, min(h, screen.height() + 400)))
         self._relayout()
@@ -304,18 +361,23 @@ class PhoneWindow(QWidget):
         self.set_phone_height(target)
 
     # ------------------------------------------------------------ data from receiver / controller
-    def on_frame(self, frame, src_w, src_h):
+    def _set_video_image(self, frame):
         plane = frame.planes[0]
         buffer = memoryview(plane)
         self.image = QImage(buffer, frame.width, frame.height, plane.line_size, QImage.Format_RGB32)
         self._frame_buffer = buffer
+
+    def on_frame(self, frame, src_w, src_h):
+        self._set_video_image(frame)
         aspect = src_w / src_h
         if self.src_size != (src_w, src_h):
             self.src_size = (src_w, src_h)
             if self.ctrl is not None:
                 self.ctrl.screen_aspect = aspect  # lets the controller notice a rotation at once
-            if abs(aspect - self.aspect) > 0.01:
+            aspect_changed = abs(aspect - self.aspect) > 0.01
+            if aspect_changed:
                 self.aspect = aspect
+            if aspect_changed or self.actual_pixels:
                 self._relayout()
         now = time.monotonic()
         if self.state != "mirroring":
@@ -344,6 +406,9 @@ class PhoneWindow(QWidget):
             self._mirror_peer = info.get("ip")
             self._mirror_revoked = info.get("revoked")
             self.image = self._frame_buffer = None
+            if self.actual_pixels:
+                self.src_size = None
+                self._relayout()
         elif event == "format":
             if self.state != "mirroring":
                 self.state = "connecting"
@@ -362,7 +427,7 @@ class PhoneWindow(QWidget):
                     self.ctrl.stop()
             self._drop_tap()  # the screen it was aimed at is gone
             self._cancel_gesture()
-            if abs(self.aspect - DEFAULT_ASPECT) > 0.01:
+            if self.actual_pixels or abs(self.aspect - DEFAULT_ASPECT) > 0.01:
                 self.aspect = DEFAULT_ASPECT
                 self._relayout()
         elif event == "decrypt_error":
@@ -451,6 +516,10 @@ class PhoneWindow(QWidget):
         if self.image is not None and self.state in ("mirroring", "paused", "connecting"):
             brush = QBrush(self.image)
             dpr = self.devicePixelRatioF()
+            if self.actual_pixels and self._has_native_image() and self.src_size == (
+                round(rect.width() * dpr), round(rect.height() * dpr)
+            ):
+                p.setRenderHint(QPainter.SmoothPixmapTransform, False)
             t = QTransform()
             t.translate(rect.x(), rect.y())
             t.scale(rect.width() / (self.image.width() / dpr) / dpr, rect.height() / (self.image.height() / dpr) / dpr)
@@ -911,6 +980,8 @@ class PhoneWindow(QWidget):
             self.update()
 
     def event(self, e):
+        if e.type() == DPI_CHANGE and self.actual_pixels:
+            QTimer.singleShot(0, self._relayout)
         if e.type() == QEvent.ToolTip:
             name = self._button_at(QPointF(e.pos())) if self.hover else None
             if name:
@@ -1050,6 +1121,8 @@ class PhoneWindow(QWidget):
                 self._toggle_mute()
             elif is_key(e, (Qt.Key_U,), (VK_U,)):
                 self._toggle_control()
+            elif is_key(e, (Qt.Key_1,), (VK_1,)):
+                self._toggle_actual_pixels()
             elif is_key(e, (Qt.Key_V,), (VK_V,)):
                 if self._control_ready():
                     text = QApplication.clipboard().text()
@@ -1101,6 +1174,9 @@ class PhoneWindow(QWidget):
             size.addAction(label, lambda k=k: self.set_phone_height(screen.height() * k))
         fullscreen = "Exit Full Screen" if self.isFullScreen() else "Full Screen"
         m.addAction(fullscreen + "\tF11", self._toggle_fullscreen)
+        pixels = QAction("Actual Pixels (1:1)\tCtrl+1", m, checkable=True, checked=self.actual_pixels)
+        pixels.triggered.connect(self._toggle_actual_pixels)
+        m.addAction(pixels)
         self._add_video_menu(m, "Resolution", ("width", "height"), RESOLUTIONS)
         self._add_video_menu(m, "Frame Rate", ("fps",), FRAME_RATES)
         m.addSeparator()
@@ -1190,6 +1266,13 @@ class PhoneWindow(QWidget):
                 lines.append(f"Displayed frame rate: {self.fps:.0f} fps" if self.fps else "Measuring frame rate...")
             elif self.state == "paused":
                 lines.append("Video is paused.")
+        if self.actual_pixels and self.src_size is not None:
+            if self._native_size() is None:
+                lines.append("View: Fit (source is too large for 1:1)")
+            elif self._has_native_image():
+                lines.append("View: Actual Pixels (1:1)")
+            else:
+                lines.append("View: Waiting for a native-size frame")
         lines.append(f"Requested on connect: {self.settings['width']} × {self.settings['height']} px"
                      f" / {self.settings['fps']} fps")
         return "\n".join(lines)
@@ -1269,7 +1352,10 @@ class PhoneWindow(QWidget):
         self.settings.save()
 
     def moveEvent(self, e):
-        self._update_target()
+        if self.actual_pixels and not self.isFullScreen():
+            self._relayout(keep_center=False)
+        else:
+            self._update_target()
 
     def resizeEvent(self, e):
         if self.isFullScreen():
