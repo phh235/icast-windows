@@ -94,7 +94,7 @@ Với iPhone dùng Face ID, bạn có thể mở Bộ chuyển đổi ứng dụ
 
 Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size** chọn kích thước, **Sound** bật hoặc tắt âm thanh, **Save Screenshot** lưu ảnh PNG vào `Pictures\iCast`, **Open Settings Folder** mở thư mục chứa `settings.json`, **Open Log** mở nhật ký và **Quit** thoát ứng dụng.
 
-**Stream Info...** hiện độ phân giải thực nhận, kích thước hiển thị và FPS.
+**Stream Info...** hiện độ phân giải thực nhận, kích thước hiển thị và FPS. **Connection Diagnostics...** hiện trạng thái AirPlay và chạy phần kiểm tra USB.
 
 ## Điều khiển qua USB
 

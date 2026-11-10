@@ -199,6 +199,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Stream Info... | Show received resolution, display size and displayed FPS |
 | Rename PC... | Change the name the iPhone shows under Screen Mirroring |
 | Open Settings Folder | Open the folder containing `settings.json` |
+| Connection Diagnostics... | Show AirPlay status and run the optional USB checks |
 | Open Log | Open `%LOCALAPPDATA%\iCast\icast.log` |
 | Quit | Exit the app |
 

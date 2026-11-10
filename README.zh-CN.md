@@ -91,7 +91,7 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 
 单击右键可以打开菜单。**Always on Top** 用于置顶，**Size** 用于选择窗口大小，**Sound** 用于切换声音，**Save Screenshot** 将截图保存为 `Pictures\iCast` 下的 PNG 文件，**Open Settings Folder** 打开 `settings.json` 所在的文件夹，**Open Log** 打开日志，**Quit** 退出应用。
 
-**Stream Info...** 显示实际接收到的分辨率、显示尺寸和帧率。
+**Stream Info...** 显示实际接收到的分辨率、显示尺寸和帧率。**Connection Diagnostics...** 显示 AirPlay 状态并运行 USB 检查。
 
 ## 通过 USB 控制
 

@@ -38,6 +38,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QMessageBox, QSystemTrayIcon,
 
 from .config import APP_NAME, LOG_FILE
 from .control import ERROR, MSG_SWITCHER_ASSISTIVE, OFF, READY, STARTING
+from .dialogs import show_diagnostics
 
 log = logging.getLogger(__name__)
 
@@ -1046,6 +1047,7 @@ class PhoneWindow(QWidget):
         m.addAction("Stream Info...", self._show_stream_info)
         m.addAction("Rename PC...", self._rename)
         m.addAction("Open Settings Folder", self._open_settings_folder)
+        m.addAction("Connection Diagnostics...", self._show_diagnostics)
         m.addAction("Open Log", self._open_log)
         m.addSeparator()
         m.addAction("Quit", QApplication.quit)
@@ -1139,6 +1141,15 @@ class PhoneWindow(QWidget):
         finally:
             timer.stop()
             dialog.deleteLater()
+
+    def _show_diagnostics(self):
+        state = self.state.replace("_", " ").capitalize()
+        summary = f"AirPlay: {state}\nReceiver name: {self.settings['name']}"
+        if self.info.get("addresses"):
+            summary += "\nPC addresses: " + ", ".join(self.info["addresses"])
+        if self.state == "error" and self.info.get("message"):
+            summary += "\n" + self.info["message"]
+        show_diagnostics(self, summary)
 
     def _toggle_mute(self):
         if self.rx:

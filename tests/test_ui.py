@@ -7,13 +7,13 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QProcess, Qt
 from PySide6.QtGui import QContextMenuEvent, QImage, QKeyEvent
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from icast import ui  # noqa: E402
+from icast import dialogs, ui  # noqa: E402
 from icast.airplay import Connection, Receiver, Request, Response  # noqa: E402
 from icast.config import Settings  # noqa: E402
 
@@ -91,6 +91,31 @@ class WindowControlsTests(unittest.TestCase):
             app.clipboard.assert_called_once_with()
         self.window._flush_type()
         self.window.ctrl.type_text.assert_called_once_with("Text to paste")
+
+    def test_diagnostics_runs_doctor_and_displays_output(self):
+        case = self
+        payload = "USB check: thiết bị".encode("utf-8")
+        split = payload.index(0xE1) + 1
+
+        class TestProcess(QProcess):
+            def start(self, program, arguments):
+                case.assertEqual(arguments[-3:], ["-m", "icast.control", "doctor"])
+                code = (f"import os, time; os.write(1, {payload[:split]!r}); "
+                        f"time.sleep(0.05); os.write(1, {payload[split:]!r})")
+                super().start(program, ["-E", "-c", code])
+
+        class InspectDialog(QDialog):
+            def exec(self):
+                process = self.findChild(TestProcess)
+                case.assertTrue(process.waitForFinished(5000))
+                text = self.findChild(QPlainTextEdit).toPlainText()
+                case.assertIn("AirPlay: Waiting", text)
+                case.assertIn(payload.decode("utf-8"), text)
+                return QDialog.Rejected
+
+        self.window.state = "waiting"
+        with mock.patch.object(dialogs, "QProcess", TestProcess), mock.patch.object(dialogs, "QDialog", InspectDialog):
+            self.window._show_diagnostics()
 
 
 if __name__ == "__main__":
