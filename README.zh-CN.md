@@ -90,6 +90,8 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 
 单击右键可以打开菜单。**Always on Top** 用于置顶，**Size** 用于选择窗口大小，**Sound** 用于切换声音，**Save Screenshot** 将截图保存为 `Pictures\iCast` 下的 PNG 文件，**Open Settings Folder** 打开 `settings.json` 所在的文件夹，**Open Log** 打开日志，**Quit** 退出应用。
 
+**Stream Info...** 显示实际接收到的分辨率、显示尺寸和帧率。
+
 ## 通过 USB 控制
 
 iCast 通过 iPhone 上运行的 WebDriverAgent（WDA）发送轻点、轻扫和键盘输入。你需要一根 USB 数据线、从 Apple 官网下载的 iTunes（为 Sideloadly 提供所需的 USB 驱动）以及一个 Apple 账户（Apple ID）。免费账户也可以使用。[下载 iTunes](https://www.apple.com/itunes/) · [WebDriverAgent](https://github.com/appium/WebDriverAgent)
@@ -167,6 +169,8 @@ iCast 通过 iPhone 上运行的 WebDriverAgent（WDA）发送轻点、轻扫和
 日志保存在 `%LOCALAPPDATA%\iCast`。应用日志为 `icast.log`，WDA 运行日志为 `wda_runner.log`，最近一次已结束的 USB 端口转发日志为 `wda_forward.log`。
 
 ## 设置和限制
+
+在右键菜单中分别选择 **Resolution**（720p、1080p 或 1440p）和 **Frame Rate**（30、60 或实验性 120 FPS）。重新连接屏幕镜像后会发送新的请求。**Stream Info...** 显示接收到的分辨率和显示帧率，具体取决于 iPhone 发送的视频流。
 
 首次启动 iCast 时会创建 `%LOCALAPPDATA%\iCast\settings.json`。请先退出应用再编辑该文件。
 

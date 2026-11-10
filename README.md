@@ -192,7 +192,10 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Always on Top | Keep the window above other windows |
 | Sound | Play the iPhone sound on the PC |
 | Size | Small, Medium or Large |
+| Resolution | Choose the requested resolution |
+| Frame Rate | Choose 30, 60 or experimental 120 FPS |
 | Save Screenshot | Save the current frame to `Pictures\iCast` |
+| Stream Info... | Show received resolution, display size and displayed FPS |
 | Rename PC... | Change the name the iPhone shows under Screen Mirroring |
 | Open Settings Folder | Open the folder containing `settings.json` |
 | Open Log | Open `%LOCALAPPDATA%\iCast\icast.log` |
@@ -340,6 +343,11 @@ plays to the right output device. The iPhone's own volume buttons also control t
   has to be re-signed every 7 days with a free Apple ID.
 
 ## Settings
+
+Right-click and use **Resolution** (720p, 1080p or 1440p) and **Frame Rate** (30, 60 or
+experimental 120 FPS) to set them independently. Reconnect Screen Mirroring to send the new
+request. **Stream Info...** shows the received resolution and displayed FPS, which depend
+on the video the iPhone sends.
 
 `%LOCALAPPDATA%\iCast\settings.json` is created on the first start. Useful keys:
 

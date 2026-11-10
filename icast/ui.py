@@ -19,6 +19,7 @@ from pathlib import Path
 from PySide6.QtCore import QEvent, QObject, QPoint, QPointF, QRectF, Qt, QTimer, Signal, Slot
 from PySide6.QtGui import (
     QAction,
+    QActionGroup,
     QBrush,
     QColor,
     QFont,
@@ -43,6 +44,8 @@ log = logging.getLogger(__name__)
 SHADOW = 22  # px around the phone for the drop shadow
 BAR = 40  # px above the phone for the hover bar
 DEFAULT_ASPECT = 1179 / 2556  # iPhone portrait
+RESOLUTIONS = (("720p", (1280, 720)), ("1080p", (1920, 1080)), ("1440p", (2560, 1440)))
+FRAME_RATES = (("30 FPS", (30,)), ("60 FPS", (60,)), ("120 FPS (Experimental)", (120,)))
 
 # input mapping when iPhone control is on
 LONG_PRESS_S = 0.5  # hold at least this long without moving = long press
@@ -165,7 +168,7 @@ class PhoneWindow(QWidget):
         self.drag_offset = None
         self.fps = 0.0
         self._frames = 0
-        self._fps_t = time.time()
+        self._fps_t = time.monotonic()
         self._hide_bar = QTimer(self, singleShot=True, interval=1200, timeout=self._bar_off)
         self._hover_btn = None
         self._hint_text = ""
@@ -243,12 +246,14 @@ class PhoneWindow(QWidget):
         self._update_target()
         self.update()
 
-    def _update_target(self):
-        if self.rx is None:
-            return
+    def _display_size(self):
         w, h = self.phone_size()
         dpr = self.devicePixelRatioF()
-        self.rx.decoder.target = (round(w * dpr), round(h * dpr))
+        return round(w * dpr), round(h * dpr)
+
+    def _update_target(self):
+        if self.rx is not None:
+            self.rx.decoder.target = self._display_size()
 
     def set_phone_height(self, h):
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
@@ -277,13 +282,14 @@ class PhoneWindow(QWidget):
             if abs(aspect - self.aspect) > 0.01:
                 self.aspect = aspect
                 self._relayout()
+        now = time.monotonic()
         if self.state != "mirroring":
             self.state = "mirroring"
+            self.fps, self._frames, self._fps_t = 0.0, 0, now
         if self.auto_control and self._mirror_peer:
             self.auto_control = False
             self._toggle_control()
         self._frames += 1
-        now = time.time()
         if now - self._fps_t >= 1:
             self.fps = self._frames / (now - self._fps_t)
             self._frames, self._fps_t = 0, now
@@ -1026,14 +1032,45 @@ class PhoneWindow(QWidget):
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         for label, k in (("Small", 0.5), ("Medium", 0.72), ("Large", 0.92)):
             size.addAction(label, lambda k=k: self.set_phone_height(screen.height() * k))
+        self._add_video_menu(m, "Resolution", ("width", "height"), RESOLUTIONS)
+        self._add_video_menu(m, "Frame Rate", ("fps",), FRAME_RATES)
         m.addSeparator()
         m.addAction("Save Screenshot", self.screenshot)
+        m.addAction("Stream Info...", self._show_stream_info)
         m.addAction("Rename PC...", self._rename)
         m.addAction("Open Settings Folder", self._open_settings_folder)
         m.addAction("Open Log", self._open_log)
         m.addSeparator()
         m.addAction("Quit", QApplication.quit)
         m.exec(e.globalPos())
+
+    def _add_video_menu(self, menu, title, keys, choices):
+        submenu = menu.addMenu(title)
+        group = QActionGroup(submenu)
+        current = tuple(self.settings[key] for key in keys)
+        for label, values in choices:
+            action = QAction(label, submenu, checkable=True, checked=values == current)
+            group.addAction(action)
+            submenu.addAction(action)
+            action.triggered.connect(lambda checked, values=values: self._save_video_choice(keys, values))
+        if group.checkedAction() is None:
+            value = " × ".join(str(value) for value in current)
+            submenu.addAction(f"Custom ({value})").setEnabled(False)
+
+    def _save_video_choice(self, keys, values):
+        previous = tuple(self.settings[key] for key in keys)
+        if values == previous:
+            return
+        for key, value in zip(keys, values):
+            self.settings[key] = value
+        if not self.settings.save():
+            for key, value in zip(keys, previous):
+                self.settings[key] = value
+            self._hint("Could not save video settings. See Open Log.")
+        elif self.image is not None:
+            self._hint("Reconnect mirroring to request the new video settings.")
+        else:
+            self._hint("Video settings saved")
 
     def _button(self, name):
         if name == "close":
@@ -1065,6 +1102,36 @@ class PhoneWindow(QWidget):
             self.rx.rename(name)
             self.info = dict(self.info, name=name)
             self.update()
+
+    def _stream_info(self):
+        w, h = self._display_size()
+        lines = [f"Display area: {w} × {h} px"]
+        if self.image is None or self.src_size is None:
+            lines.append("Received video: Waiting for a frame")
+        else:
+            src_w, src_h = self.src_size
+            lines.append(f"Received video: {src_w} × {src_h} px")
+            if self.state == "mirroring":
+                lines.append(f"Displayed frame rate: {self.fps:.0f} fps" if self.fps else "Measuring frame rate...")
+            elif self.state == "paused":
+                lines.append("Video is paused.")
+        lines.append(f"Requested on connect: {self.settings['width']} × {self.settings['height']} px"
+                     f" / {self.settings['fps']} fps")
+        return "\n".join(lines)
+
+    def _show_stream_info(self):
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Stream Info")
+        dialog.setTextFormat(Qt.PlainText)
+        dialog.setStandardButtons(QMessageBox.Close)
+        dialog.setText(self._stream_info())
+        timer = QTimer(dialog, interval=1000, timeout=lambda: dialog.setText(self._stream_info()))
+        timer.start()
+        try:
+            dialog.exec()
+        finally:
+            timer.stop()
+            dialog.deleteLater()
 
     def _toggle_mute(self):
         if self.rx:

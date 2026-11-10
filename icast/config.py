@@ -117,6 +117,8 @@ class Settings:
                 os.replace(tmp, self.path)
         except Exception as e:
             log.warning("could not save settings: %s", e)
+            return False
+        return True
 
     @property
     def mac_bytes(self) -> bytes:

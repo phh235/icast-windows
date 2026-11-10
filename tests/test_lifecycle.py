@@ -125,10 +125,10 @@ class SettingsTests(unittest.TestCase):
 
             with mock.patch("icast.config.json.dump", side_effect=partial_dump):
                 with self.assertLogs("icast.config", level="WARNING"):
-                    settings.save()
+                    self.assertFalse(settings.save())
             self.assertEqual(path.read_bytes(), original)
             self.assertEqual(list(path.parent.iterdir()), [path])
-            settings.save()
+            self.assertTrue(settings.save())
             self.assertEqual(Settings(path)["name"], "Pending name")
 
     def test_replaces_invalid_identity_but_retains_other_settings(self):

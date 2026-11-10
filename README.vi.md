@@ -93,6 +93,8 @@ Với iPhone dùng Face ID, bạn có thể mở Bộ chuyển đổi ứng dụ
 
 Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size** chọn kích thước, **Sound** bật hoặc tắt âm thanh, **Save Screenshot** lưu ảnh PNG vào `Pictures\iCast`, **Open Settings Folder** mở thư mục chứa `settings.json`, **Open Log** mở nhật ký và **Quit** thoát ứng dụng.
 
+**Stream Info...** hiện độ phân giải thực nhận, kích thước hiển thị và FPS.
+
 ## Điều khiển qua USB
 
 Để gửi thao tác chạm, vuốt và nhập chữ từ Windows, iCast dùng WebDriverAgent (WDA) chạy trên iPhone. Bạn cần cáp USB, bản iTunes từ trang Apple để có trình điều khiển USB phù hợp với Sideloadly và một Tài khoản Apple (Apple ID). Tài khoản miễn phí cũng dùng được. [Tải iTunes](https://www.apple.com/itunes/) · [WebDriverAgent](https://github.com/appium/WebDriverAgent)
@@ -170,6 +172,8 @@ Các lệnh `tap`, `home` và `type` mặc định dùng `http://127.0.0.1:8100`
 Nhật ký nằm trong `%LOCALAPPDATA%\iCast`. Xem `icast.log` cho ứng dụng, `wda_runner.log` cho WDA và `wda_forward.log` cho phiên chuyển tiếp cổng USB đã kết thúc gần nhất.
 
 ## Cài đặt và giới hạn
+
+Trong menu chuột phải, chọn **Resolution** (720p, 1080p hoặc 1440p) và **Frame Rate** (30, 60 hoặc 120 FPS thử nghiệm) riêng biệt. Kết nối lại Screen Mirroring để gửi yêu cầu mới. **Stream Info...** hiện độ phân giải nhận được và FPS hiển thị, tùy vào luồng iPhone gửi.
 
 Tệp `%LOCALAPPDATA%\iCast\settings.json` được tạo lần đầu khi mở iCast. Thoát ứng dụng trước khi sửa tệp.
 
