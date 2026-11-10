@@ -171,6 +171,7 @@ line from its start to its end.
 | Ctrl + M | Mute / unmute the sound on the PC |
 | Ctrl + U | Turn USB control on / off |
 | Ctrl + V | Paste Windows clipboard text into the focused iPhone field while USB control is ready |
+| F11 / Esc | Toggle full screen / return to the windowed view |
 | Ctrl + Plus / Ctrl + Minus | Resize the window |
 
 Home, App Switcher and iPhone volume act on the phone while control is ready.
@@ -193,6 +194,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Always on Top | Keep the window above other windows |
 | Sound | Play the iPhone sound on the PC |
 | Size | Small, Medium or Large |
+| Full Screen / Exit Full Screen | Fit the iPhone view to the current display and keep its aspect ratio |
 | Resolution | Choose the requested resolution |
 | Frame Rate | Choose 30, 60 or experimental 120 FPS |
 | Save Screenshot | Save the current frame to `Pictures\iCast` |

@@ -45,6 +45,7 @@ log = logging.getLogger(__name__)
 SHADOW = 22  # px around the phone for the drop shadow
 BAR = 40  # px above the phone for the hover bar
 DEFAULT_ASPECT = 1179 / 2556  # iPhone portrait
+WINDOW_SIZE_MAX = (1 << 24) - 1  # Qt's unconstrained QWidget size
 RESOLUTIONS = (("720p", (1280, 720)), ("1080p", (1920, 1080)), ("1440p", (2560, 1440)))
 FRAME_RATES = (("30 FPS", (30,)), ("60 FPS", (60,)), ("120 FPS (Experimental)", (120,)))
 
@@ -167,6 +168,7 @@ class PhoneWindow(QWidget):
         self.auto_control = False
         self.hover = False
         self.drag_offset = None
+        self._windowed_geometry = None
         self.fps = 0.0
         self._frames = 0
         self._fps_t = time.monotonic()
@@ -220,6 +222,9 @@ class PhoneWindow(QWidget):
         self.setWindowFlags(flags)
 
     def phone_size(self):
+        if self.isFullScreen():
+            h = min(self.height(), self.width() / self.aspect)
+            return max(1, round(h * self.aspect)), max(1, round(h))
         if self.aspect <= 1:  # portrait: height is the reference
             h = self.phone_h
             w = round(h * self.aspect)
@@ -230,6 +235,8 @@ class PhoneWindow(QWidget):
 
     def phone_rect(self) -> QRectF:
         w, h = self.phone_size()
+        if self.isFullScreen():
+            return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
         return QRectF(SHADOW, SHADOW + BAR, w, h)
 
     def corner_radius(self) -> float:
@@ -237,15 +244,40 @@ class PhoneWindow(QWidget):
         return min(w, h) * 0.135
 
     def _relayout(self, keep_center=True):
-        w, h = self.phone_size()
-        center = self.geometry().center()
-        self.setFixedSize(w + 2 * SHADOW, h + 2 * SHADOW + BAR)
-        if keep_center:
-            g = self.geometry()
-            g.moveCenter(center)
-            self.move(g.topLeft())
+        if not self.isFullScreen():
+            w, h = self.phone_size()
+            center = self.geometry().center()
+            self.setFixedSize(w + 2 * SHADOW, h + 2 * SHADOW + BAR)
+            if keep_center:
+                g = self.geometry()
+                g.moveCenter(center)
+                self.move(g.topLeft())
         self._update_target()
         self.update()
+
+    def _toggle_fullscreen(self):
+        self._drop_tap()
+        self._cancel_gesture()
+        self.drag_offset = None
+        self._wheel_timer.stop()
+        self._wheel_acc = 0.0
+        self._zoom_timer.stop()
+        self._zoom_acc = 0
+        self._hide_bar.stop()
+        self._hover_btn = None
+        if self.isFullScreen():
+            geometry, self._windowed_geometry = self._windowed_geometry, None
+            self.showNormal()
+            if geometry is not None:
+                self.setGeometry(geometry)
+            self.hover = self.underMouse()
+        else:
+            self._windowed_geometry = self.geometry()
+            self.setMinimumSize(0, 0)
+            self.setMaximumSize(WINDOW_SIZE_MAX, WINDOW_SIZE_MAX)
+            self.showFullScreen()
+            self._flash_bar(1.2)
+        self._relayout()
 
     def _display_size(self):
         w, h = self.phone_size()
@@ -257,6 +289,8 @@ class PhoneWindow(QWidget):
             self.rx.decoder.target = self._display_size()
 
     def set_phone_height(self, h):
+        if self.isFullScreen():
+            return
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         self.phone_h = int(max(320, min(h, screen.height() + 400)))
         self._relayout()
@@ -406,9 +440,12 @@ class PhoneWindow(QWidget):
         p.setRenderHint(QPainter.Antialiasing)
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         rect = self.phone_rect()
-        r = self.corner_radius()
-
-        p.drawPixmap(0, 0, self._shadow_pixmap(rect, r))
+        fullscreen = self.isFullScreen()
+        r = 0 if fullscreen else self.corner_radius()
+        if fullscreen:
+            p.fillRect(self.rect(), Qt.black)
+        else:
+            p.drawPixmap(0, 0, self._shadow_pixmap(rect, r))
         p.setPen(Qt.NoPen)
 
         if self.image is not None and self.state in ("mirroring", "paused", "connecting"):
@@ -429,9 +466,10 @@ class PhoneWindow(QWidget):
 
         self._paint_touches(p, rect, r)
 
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(255, 255, 255, 38), 1))
-        p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r - 0.5, r - 0.5)
+        if not fullscreen:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(QColor(255, 255, 255, 38), 1))
+            p.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), r - 0.5, r - 0.5)
 
         if self.hover:
             self._paint_bar(p)
@@ -562,7 +600,8 @@ class PhoneWindow(QWidget):
     # hover bar: [label .......... control  home  pin  -  x]
     def _bar_rect(self) -> QRectF:
         rect = self.phone_rect()
-        return QRectF(rect.x() + 6, SHADOW + 2, rect.width() - 12, BAR - 10)
+        y = rect.top() + 6 if self.isFullScreen() else SHADOW + 2
+        return QRectF(rect.x() + 6, y, rect.width() - 12, BAR - 10)
 
     def _buttons(self):
         b = self._bar_rect()
@@ -692,7 +731,7 @@ class PhoneWindow(QWidget):
     def _flash_bar(self, seconds=HINT_S):
         """Show the top bar for a moment (status changes, hints) even if the mouse is elsewhere."""
         self.hover = True
-        if not self.underMouse():
+        if self.isFullScreen() or not self.underMouse():
             self._hide_bar.start(int(seconds * 1000))
         self._update_anim()
         self.update()
@@ -858,6 +897,8 @@ class PhoneWindow(QWidget):
 
     # ------------------------------------------------------------ input
     def enterEvent(self, e):
+        if self.isFullScreen():
+            return
         self._hide_bar.stop()
         self.hover = True
         self._update_anim()
@@ -902,7 +943,8 @@ class PhoneWindow(QWidget):
         if self._gestures_on() and not alt and self.phone_rect().contains(pos):
             self._gesture_begin(pos)
             return
-        self.drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
+        if not self.isFullScreen():
+            self.drag_offset = e.globalPosition().toPoint() - self.frameGeometry().topLeft()
 
     def mouseMoveEvent(self, e):
         pos = e.position()
@@ -919,6 +961,15 @@ class PhoneWindow(QWidget):
         if self.drag_offset is not None and e.buttons() & Qt.LeftButton:
             self.move(e.globalPosition().toPoint() - self.drag_offset)
             return
+        if self.isFullScreen():
+            if self._bar_rect().contains(pos):
+                self._hide_bar.stop()
+                if not self.hover:
+                    self.hover = True
+                    self._update_anim()
+                    self.update()
+            elif self.hover and not self._hide_bar.isActive():
+                self._hide_bar.start()
         name = self._button_at(pos) if self.hover else None
         if name != self._hover_btn:
             self._hover_btn = name
@@ -961,7 +1012,7 @@ class PhoneWindow(QWidget):
     def wheelEvent(self, e):
         dy = e.angleDelta().y()
         if e.modifiers() & Qt.ControlModifier:
-            if dy:
+            if dy and not self.isFullScreen():
                 self._zoom_acc += dy  # proportional: a touchpad pinch sends many small deltas
                 if not self._zoom_timer.isActive():
                     self._apply_zoom()
@@ -974,6 +1025,11 @@ class PhoneWindow(QWidget):
 
     def keyPressEvent(self, e):
         mods = e.modifiers()
+        if mods == Qt.NoModifier and (e.key() == Qt.Key_F11 or
+                                       (e.key() == Qt.Key_Escape and self.isFullScreen())):
+            if not e.isAutoRepeat():
+                self._toggle_fullscreen()
+            return
         if (mods & Qt.ControlModifier) and not (mods & Qt.AltModifier):
             rep = e.isAutoRepeat()
             if is_key(e, (Qt.Key_Plus, Qt.Key_Equal), (VK_OEM_PLUS, VK_ADD)):
@@ -1037,9 +1093,12 @@ class PhoneWindow(QWidget):
         snd.triggered.connect(self._toggle_mute)
         m.addAction(snd)
         size = m.addMenu("Size")
+        size.setEnabled(not self.isFullScreen())
         screen = (self.screen() or QApplication.primaryScreen()).availableGeometry()
         for label, k in (("Small", 0.5), ("Medium", 0.72), ("Large", 0.92)):
             size.addAction(label, lambda k=k: self.set_phone_height(screen.height() * k))
+        fullscreen = "Exit Full Screen" if self.isFullScreen() else "Full Screen"
+        m.addAction(fullscreen + "\tF11", self._toggle_fullscreen)
         self._add_video_menu(m, "Resolution", ("width", "height"), RESOLUTIONS)
         self._add_video_menu(m, "Frame Rate", ("fps",), FRAME_RATES)
         m.addSeparator()
@@ -1094,10 +1153,14 @@ class PhoneWindow(QWidget):
             on = not self.settings.get("always_on_top", True)
             self.settings["always_on_top"] = on
             self.settings.save()
+            fullscreen = self.isFullScreen()
             pos = self.pos()
             self._apply_flags()
-            self.move(pos)
-            self.show()
+            if fullscreen:
+                self.showFullScreen()
+            else:
+                self.move(pos)
+                self.show()
         self.update()
 
     def _rename(self):
@@ -1189,11 +1252,16 @@ class PhoneWindow(QWidget):
             log.exception("screenshot failed")
 
     def _save_pos(self):
-        self.settings["x"], self.settings["y"] = self.x(), self.y()
+        pos = self._windowed_geometry.topLeft() if self._windowed_geometry is not None else self.pos()
+        self.settings["x"], self.settings["y"] = pos.x(), pos.y()
         self.settings.save()
 
     def moveEvent(self, e):
         self._update_target()
+
+    def resizeEvent(self, e):
+        if self.isFullScreen():
+            self._update_target()
 
     def closeEvent(self, e):
         self._save_pos()
@@ -1215,6 +1283,9 @@ class PhoneWindow(QWidget):
         self._tray_menu = menu  # the tray does not take ownership of the menu
 
     def _show_front(self):
-        self.showNormal()
+        if self._windowed_geometry is not None:
+            self.showFullScreen()
+        else:
+            self.showNormal()
         self.raise_()
         self.activateWindow()

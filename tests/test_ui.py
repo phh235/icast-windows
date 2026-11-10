@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from PySide6.QtCore import QEvent, QPoint, QProcess, Qt
+from PySide6.QtCore import QEvent, QPoint, QPointF, QProcess, QRectF, Qt
 from PySide6.QtGui import QContextMenuEvent, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit
 
@@ -76,6 +76,39 @@ class WindowControlsTests(unittest.TestCase):
         self.assertIn("Received video: 590 × 1280 px", info)
         self.assertIn("Display area: 460 × 1000 px", info)
         self.assertIn("Displayed frame rate: 58 fps", info)
+
+    def test_fullscreen_fits_video_and_escape_restores_window(self):
+        self.window.move(45, 66)
+        self.window.show()
+        self.app.processEvents()
+        normal = self.window.geometry()
+        portrait = self.window.aspect
+        self.window.rx = mock.Mock()
+
+        self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_F11, Qt.NoModifier))
+        self.app.processEvents()
+        self.assertTrue(self.window.isFullScreen())
+        full = self.window.geometry()
+        for aspect in (portrait, 16 / 9):
+            self.window.aspect = aspect
+            self.window._relayout()
+            video = self.window.phone_rect()
+            bounds = QRectF(self.window.rect())
+            self.assertEqual(self.window.geometry(), full)
+            self.assertTrue(bounds.contains(video))
+            self.assertEqual(video.center(), bounds.center())
+            self.assertAlmostEqual(video.width() / video.height(), aspect, delta=0.005)
+            self.assertEqual(self.window.rx.decoder.target, self.window._display_size())
+            point = QPointF(video.x() + 0.25 * video.width(), video.y() + 0.75 * video.height())
+            self.assertEqual(ui.to_fraction(video, point), (0.25, 0.75))
+        self.window._save_pos()
+        self.assertEqual((self.settings["x"], self.settings["y"]), (normal.x(), normal.y()))
+
+        self.window.aspect = portrait
+        self.window.keyPressEvent(QKeyEvent(QEvent.KeyPress, Qt.Key_Escape, Qt.NoModifier))
+        self.app.processEvents()
+        self.assertFalse(self.window.isFullScreen())
+        self.assertEqual(self.window.geometry(), normal)
 
     def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
         self.window.ctrl = mock.Mock()

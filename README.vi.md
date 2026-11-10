@@ -86,6 +86,7 @@ Rê chuột lên cửa sổ để hiện thanh điều khiển. Thanh này hiể
 | `Ctrl` + `M` | Tắt hoặc bật âm thanh trên máy tính |
 | `Ctrl` + `U` | Bật hoặc tắt điều khiển qua USB |
 | `Ctrl` + `V` | Dán văn bản từ clipboard Windows vào ô đang chọn trên iPhone khi điều khiển USB đã sẵn sàng |
+| `F11` / `Esc` | Bật tắt toàn màn hình / trở lại cửa sổ |
 | `Ctrl` + `H` | Về Màn hình chính khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `J` | Mở Bộ chuyển đổi ứng dụng trên iPhone có nút Home khi điều khiển USB đã sẵn sàng |
 | `Ctrl` + `↑` / `↓` | Tăng hoặc giảm âm lượng iPhone khi điều khiển USB đã sẵn sàng |
@@ -95,6 +96,8 @@ Với iPhone dùng Face ID, bạn có thể mở Bộ chuyển đổi ứng dụ
 Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size** chọn kích thước, **Sound** bật hoặc tắt âm thanh, **Save Screenshot** lưu ảnh PNG vào `Pictures\iCast`, **Open Settings Folder** mở thư mục chứa `settings.json`, **Open Log** mở nhật ký và **Quit** thoát ứng dụng.
 
 **Stream Info...** hiện độ phân giải thực nhận, kích thước hiển thị và FPS. **Connection Diagnostics...** hiện trạng thái AirPlay và chạy phần kiểm tra USB.
+
+**Full Screen** phóng hình vừa màn hình hiện tại và giữ tỷ lệ iPhone.
 
 ## Điều khiển qua USB
 

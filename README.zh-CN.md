@@ -83,6 +83,7 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 | `Ctrl` + `M` | 将电脑上的镜像声音静音或取消静音 |
 | `Ctrl` + `U` | 开启或关闭 USB 控制 |
 | `Ctrl` + `V` | USB 控制就绪后，将 Windows 剪贴板中的文本粘贴到 iPhone 当前输入框 |
+| `F11` / `Esc` | 切换全屏 / 返回窗口模式 |
 | `Ctrl` + `H` | USB 控制就绪后返回 iPhone 主屏幕 |
 | `Ctrl` + `J` | USB 控制就绪后，在配备主屏幕按钮的 iPhone 上打开 App 切换器 |
 | `Ctrl` + `↑` / `↓` | USB 控制就绪后调高或调低 iPhone 音量 |
@@ -92,6 +93,8 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 单击右键可以打开菜单。**Always on Top** 用于置顶，**Size** 用于选择窗口大小，**Sound** 用于切换声音，**Save Screenshot** 将截图保存为 `Pictures\iCast` 下的 PNG 文件，**Open Settings Folder** 打开 `settings.json` 所在的文件夹，**Open Log** 打开日志，**Quit** 退出应用。
 
 **Stream Info...** 显示实际接收到的分辨率、显示尺寸和帧率。**Connection Diagnostics...** 显示 AirPlay 状态并运行 USB 检查。
+
+**Full Screen** 让画面适应当前显示器并保持 iPhone 的画面比例。
 
 ## 通过 USB 控制
 
