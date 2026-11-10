@@ -1029,6 +1029,7 @@ class PhoneWindow(QWidget):
         m.addSeparator()
         m.addAction("Save Screenshot", self.screenshot)
         m.addAction("Rename PC...", self._rename)
+        m.addAction("Open Settings Folder", self._open_settings_folder)
         m.addAction("Open Log", self._open_log)
         m.addSeparator()
         m.addAction("Quit", QApplication.quit)
@@ -1073,6 +1074,13 @@ class PhoneWindow(QWidget):
     def _open_log(self):
         if LOG_FILE.exists():
             os.startfile(str(LOG_FILE))
+
+    def _open_settings_folder(self):
+        try:
+            os.startfile(str(self.settings.path.parent))
+        except OSError:
+            log.exception("could not open settings folder")
+            self._hint("Could not open settings folder")
 
     def screenshot(self):
         frame = getattr(self.rx.decoder, "last_frame", None) if self.rx else None

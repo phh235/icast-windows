@@ -88,7 +88,7 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 
 使用面容 ID（Face ID）的 iPhone 可以通过手机上的屏幕底部手势或「辅助触控」打开 App 切换器。在这些机型上按 `Ctrl` + `J`，iCast 会显示辅助触控提示。[Apple 辅助触控指南](https://support.apple.com/zh-cn/111794)
 
-单击右键可以打开菜单。**Always on Top** 用于置顶，**Size** 用于选择窗口大小，**Sound** 用于切换声音，**Save Screenshot** 将截图保存为 `Pictures\iCast` 下的 PNG 文件，**Open Log** 打开日志，**Quit** 退出应用。
+单击右键可以打开菜单。**Always on Top** 用于置顶，**Size** 用于选择窗口大小，**Sound** 用于切换声音，**Save Screenshot** 将截图保存为 `Pictures\iCast` 下的 PNG 文件，**Open Settings Folder** 打开 `settings.json` 所在的文件夹，**Open Log** 打开日志，**Quit** 退出应用。
 
 ## 通过 USB 控制
 

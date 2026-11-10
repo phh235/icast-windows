@@ -194,6 +194,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Size | Small, Medium or Large |
 | Save Screenshot | Save the current frame to `Pictures\iCast` |
 | Rename PC... | Change the name the iPhone shows under Screen Mirroring |
+| Open Settings Folder | Open the folder containing `settings.json` |
 | Open Log | Open `%LOCALAPPDATA%\iCast\icast.log` |
 | Quit | Exit the app |
 

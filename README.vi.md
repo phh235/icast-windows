@@ -91,7 +91,7 @@ Rê chuột lên cửa sổ để hiện thanh điều khiển. Thanh này hiể
 
 Với iPhone dùng Face ID, bạn có thể mở Bộ chuyển đổi ứng dụng bằng cử chỉ từ cạnh dưới trên điện thoại hoặc qua AssistiveTouch. iCast hiện gợi ý AssistiveTouch khi bạn nhấn `Ctrl` + `J` trên các mẫu này. [Hướng dẫn AssistiveTouch của Apple](https://support.apple.com/vi-vn/111794)
 
-Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size** chọn kích thước, **Sound** bật hoặc tắt âm thanh, **Save Screenshot** lưu ảnh PNG vào `Pictures\iCast`, **Open Log** mở nhật ký và **Quit** thoát ứng dụng.
+Nhấp chuột phải để mở menu. **Always on Top** ghim cửa sổ, **Size** chọn kích thước, **Sound** bật hoặc tắt âm thanh, **Save Screenshot** lưu ảnh PNG vào `Pictures\iCast`, **Open Settings Folder** mở thư mục chứa `settings.json`, **Open Log** mở nhật ký và **Quit** thoát ứng dụng.
 
 ## Điều khiển qua USB
 
