@@ -5,8 +5,10 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
+import av
 from PySide6.QtCore import QEvent, QPoint, QPointF, QProcess, QRectF, Qt
 from PySide6.QtGui import QContextMenuEvent, QImage, QKeyEvent
 from PySide6.QtWidgets import QApplication, QDialog, QPlainTextEdit
@@ -109,6 +111,24 @@ class WindowControlsTests(unittest.TestCase):
         self.app.processEvents()
         self.assertFalse(self.window.isFullScreen())
         self.assertEqual(self.window.geometry(), normal)
+
+    def test_copy_screenshot_uses_full_resolution_frame(self):
+        frame = av.VideoFrame(16, 24, "bgra")
+        plane = frame.planes[0]
+        plane.update(bytes((10, 20, 30, 255)) * (plane.buffer_size // 4))
+        self.window.rx = SimpleNamespace(decoder=SimpleNamespace(last_frame=frame))
+        self.window.image = QImage(8, 12, QImage.Format_RGB32)
+        key = QKeyEvent(QEvent.KeyPress, Qt.Key_C, Qt.ControlModifier | Qt.ShiftModifier)
+
+        with mock.patch.object(ui, "QApplication") as app:
+            self.window.keyPressEvent(key)
+            copy = app.clipboard.return_value.setImage
+            copy.assert_called_once()
+        image, = copy.call_args.args
+        self.window.rx.decoder.last_frame = None
+        del frame, plane
+        self.assertEqual((image.width(), image.height()), (16, 24))
+        self.assertEqual(image.pixelColor(0, 0).getRgb(), (30, 20, 10, 255))
 
     def test_paste_reads_clipboard_once_and_only_while_control_is_ready(self):
         self.window.ctrl = mock.Mock()

@@ -172,6 +172,7 @@ line from its start to its end.
 | Ctrl + U | Turn USB control on / off |
 | Ctrl + V | Paste Windows clipboard text into the focused iPhone field while USB control is ready |
 | F11 / Esc | Toggle full screen / return to the windowed view |
+| Ctrl + Shift + C | Copy the current frame at its original resolution |
 | Ctrl + Plus / Ctrl + Minus | Resize the window |
 
 Home, App Switcher and iPhone volume act on the phone while control is ready.
@@ -198,6 +199,7 @@ smooth scrolling with a touchpad resizes smoothly too.
 | Resolution | Choose the requested resolution |
 | Frame Rate | Choose 30, 60 or experimental 120 FPS |
 | Save Screenshot | Save the current frame to `Pictures\iCast` |
+| Copy Screenshot | Copy the original frame to the Windows clipboard |
 | Stream Info... | Show received resolution, display size and displayed FPS |
 | Rename PC... | Change the name the iPhone shows under Screen Mirroring |
 | Open Settings Folder | Open the folder containing `settings.json` |

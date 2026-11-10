@@ -64,7 +64,7 @@ ZOOM_PER_NOTCH = 1.06
 ZOOM_MS = 30
 
 # Windows virtual-key codes: shortcuts must also work with non-Latin keyboard layouts
-VK_H, VK_J, VK_M, VK_U, VK_V = 0x48, 0x4A, 0x4D, 0x55, 0x56
+VK_C, VK_H, VK_J, VK_M, VK_U, VK_V = 0x43, 0x48, 0x4A, 0x4D, 0x55, 0x56
 VK_OEM_PLUS, VK_OEM_MINUS, VK_ADD, VK_SUBTRACT = 0xBB, 0xBD, 0x6B, 0x6D
 
 GREEN, ORANGE, RED = QColor("#30d158"), QColor("#ff9f0a"), QColor("#ff453a")
@@ -1057,6 +1057,8 @@ class PhoneWindow(QWidget):
                         self._type(text)
                 else:
                     self._hint("Enable USB control to paste")
+            elif mods & Qt.ShiftModifier and is_key(e, (Qt.Key_C,), (VK_C,)):
+                self.copy_screenshot()
             else:
                 super().keyPressEvent(e)
             return
@@ -1103,6 +1105,7 @@ class PhoneWindow(QWidget):
         self._add_video_menu(m, "Frame Rate", ("fps",), FRAME_RATES)
         m.addSeparator()
         m.addAction("Save Screenshot", self.screenshot)
+        m.addAction("Copy Screenshot\tCtrl+Shift+C", self.copy_screenshot)
         m.addAction("Stream Info...", self._show_stream_info)
         m.addAction("Rename PC...", self._rename)
         m.addAction("Open Settings Folder", self._open_settings_folder)
@@ -1230,15 +1233,22 @@ class PhoneWindow(QWidget):
             log.exception("could not open settings folder")
             self._hint("Could not open settings folder")
 
-    def screenshot(self):
+    def copy_screenshot(self):
+        self.screenshot(copy=True)
+
+    def screenshot(self, *, copy=False):
         frame = getattr(self.rx.decoder, "last_frame", None) if self.rx else None
         if frame is None:
-            self._hint("Nothing to save yet")
+            self._hint("Nothing to copy yet" if copy else "Nothing to save yet")
             return
         try:
             frame = frame.reformat(format="bgra")
             plane = frame.planes[0]
             img = QImage(memoryview(plane), frame.width, frame.height, plane.line_size, QImage.Format_RGB32)
+            if copy:
+                QApplication.clipboard().setImage(img.copy())
+                self._hint("Screenshot copied")
+                return
             folder = Path.home() / "Pictures" / APP_NAME
             folder.mkdir(parents=True, exist_ok=True)
             path = folder / time.strftime("iPhone %Y-%m-%d %H-%M-%S.png")
@@ -1250,6 +1260,8 @@ class PhoneWindow(QWidget):
                 self._hint("Screenshot saved")
         except Exception:
             log.exception("screenshot failed")
+            if copy:
+                self._hint("Could not copy screenshot")
 
     def _save_pos(self):
         pos = self._windowed_geometry.topLeft() if self._windowed_geometry is not None else self.pos()

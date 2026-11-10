@@ -84,6 +84,7 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 | `Ctrl` + `U` | 开启或关闭 USB 控制 |
 | `Ctrl` + `V` | USB 控制就绪后，将 Windows 剪贴板中的文本粘贴到 iPhone 当前输入框 |
 | `F11` / `Esc` | 切换全屏 / 返回窗口模式 |
+| `Ctrl` + `Shift` + `C` | 按原始分辨率复制当前画面 |
 | `Ctrl` + `H` | USB 控制就绪后返回 iPhone 主屏幕 |
 | `Ctrl` + `J` | USB 控制就绪后，在配备主屏幕按钮的 iPhone 上打开 App 切换器 |
 | `Ctrl` + `↑` / `↓` | USB 控制就绪后调高或调低 iPhone 音量 |
@@ -94,7 +95,7 @@ iCast 使用无边框窗口，默认置顶，并会记住窗口位置。iPhone �
 
 **Stream Info...** 显示实际接收到的分辨率、显示尺寸和帧率。**Connection Diagnostics...** 显示 AirPlay 状态并运行 USB 检查。
 
-**Full Screen** 让画面适应当前显示器并保持 iPhone 的画面比例。
+**Full Screen** 让画面适应当前显示器并保持 iPhone 的画面比例。**Copy Screenshot** 将原始画面复制到 Windows 剪贴板。
 
 ## 通过 USB 控制
 
