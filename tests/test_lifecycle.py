@@ -141,6 +141,25 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(len(bytes.fromhex(settings["ed25519_seed"])), 32)
             self.assertEqual(Settings(path).data, settings.data)
 
+    def test_repairs_malformed_values_and_keeps_usable_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "settings.json"
+            path.write_text(json.dumps({
+                "name": ["invalid name"], "width": "2560", "height": True, "fps": 0,
+                "phone_height": "tall", "x": "-100", "y": 1 << 50,
+                "audio": False, "always_on_top": "invalid", "custom": {"keep": True},
+                "mac": "02123456789a", "ed25519_seed": "ab" * 32,
+            }), encoding="utf-8")
+            with mock.patch("icast.config.socket.gethostname", return_value="Test PC"):
+                settings = Settings(path)
+            self.assertEqual(settings.data, {
+                "name": "Test PC", "width": 2560, "height": 1080, "fps": 60,
+                "phone_height": 0, "x": -100, "y": None,
+                "audio": False, "always_on_top": True, "custom": {"keep": True},
+                "mac": "02123456789a", "ed25519_seed": "ab" * 32,
+            })
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), settings.data)
+
 
 class NetworkBoundaryTests(unittest.IsolatedAsyncioTestCase):
     HEARTBEAT = struct.pack("<IB", 0, 2) + bytes(123)

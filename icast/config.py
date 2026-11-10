@@ -36,6 +36,11 @@ DEFAULTS = {
     "ed25519_seed": "",
 }
 
+# Leave headroom for arithmetic on window coordinates before passing them to Qt.
+_INT_LIMIT = 1 << 30
+_INT_MINIMUMS = {"width": 1, "height": 1, "fps": 1, "phone_height": 0,
+                 "x": -_INT_LIMIT, "y": -_INT_LIMIT}
+
 
 def _valid_hex(value, size):
     if not isinstance(value, str) or len(value) != size * 2:
@@ -53,11 +58,15 @@ class Settings:
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             try:
-                self.data.update(json.loads(path.read_text(encoding="utf-8")))
-            except Exception as e:  # corrupt file: keep defaults, rewrite
+                saved = json.loads(path.read_text(encoding="utf-8"))
+                if not isinstance(saved, dict):
+                    raise ValueError("expected a JSON object")
+                self.data.update(saved)
+            except (OSError, ValueError, RecursionError) as e:
                 log.warning("%s unreadable (%s), using defaults", path.name, e)
-        changed = False
-        if not self.data.get("name"):
+        changed = self._normalize_values()
+        name = self.data["name"]
+        if not isinstance(name, str) or not name.strip():
             self.data["name"] = socket.gethostname() or "Windows PC"
             changed = True
         if not _valid_hex(self.data.get("mac"), 6):
@@ -70,6 +79,25 @@ class Settings:
             changed = True
         if changed:
             self.save()
+
+    def _normalize_values(self):
+        changed = False
+        for key, minimum in _INT_MINIMUMS.items():
+            value = self.data[key]
+            try:
+                number = int(value) if not isinstance(value, bool) else None
+            except (TypeError, ValueError, OverflowError):
+                number = None
+            if number is None or not minimum <= number < _INT_LIMIT:
+                number = DEFAULTS[key]
+            if type(value) is not type(number) or value != number:
+                self.data[key] = number
+                changed = True
+        for key in ("audio", "always_on_top"):
+            if not isinstance(self.data[key], bool):
+                self.data[key] = DEFAULTS[key]
+                changed = True
+        return changed
 
     def __getitem__(self, k):
         return self.data[k]
