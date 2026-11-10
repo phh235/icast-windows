@@ -48,9 +48,12 @@ For the optional USB control you also need:
 
 - checks that Python 3.11+ is available,
 - creates a private virtual environment in `%LOCALAPPDATA%\iCast\venv`,
-- installs the dependencies from `requirements.txt` into it,
+- installs the dependencies from `requirements-control.txt` into it,
 - creates an **iCast** shortcut on the Desktop and in the Start menu. The shortcut
   runs `pythonw -m icast` from the repository folder, so no console window opens.
+
+For a smaller fresh installation with mirroring and audio, run `install.bat --mirror-only`.
+You can add USB control later by running `install.bat` again.
 
 If you move the folder later, run `install.bat` again so the shortcuts point to the new
 location. `run.bat` starts the app without a shortcut, and `control.bat` runs the USB
@@ -333,8 +336,9 @@ receiver.
 ## Development
 
 Use the app's environment (`%LOCALAPPDATA%\iCast\venv\Scripts\python.exe`) or any
-Python 3.11+ with `requirements.txt` installed, and run everything from the repository
-folder.
+Python 3.11+ with `requirements.txt` installed. Use `requirements-control.txt` for
+the optional pymobiledevice3 command checks. The simulator also uses NumPy.
+Run everything from the repository folder.
 
 ```bat
 rem FairPlay known-answer tests (21 recorded sessions)
