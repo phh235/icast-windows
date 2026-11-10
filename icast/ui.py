@@ -27,6 +27,7 @@ from PySide6.QtGui import (
     QLinearGradient,
     QPainter,
     QPainterPath,
+    QPainterPathStroker,
     QPen,
     QPixmap,
     QRadialGradient,
@@ -481,18 +482,18 @@ class PhoneWindow(QWidget):
     def _paint_airplay_glyph(self, p, rect):
         s = rect.width() * 0.2
         cx, cy = rect.center().x(), rect.y() + rect.height() * 0.36
-        p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor(255, 255, 255, 220), max(2.0, s * 0.07), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        top = cy - s * 0.5
-        p.drawRoundedRect(QRectF(cx - s * 0.62, top, s * 1.24, s * 0.75), s * 0.08, s * 0.08)
+        screen = QPainterPath()
+        screen.addRoundedRect(QRectF(cx - s * 0.62, cy - s * 0.5, s * 1.24, s * 0.75), s * 0.08, s * 0.08)
+        stroke = QPainterPathStroker()
+        stroke.setWidth(max(2.0, s * 0.07))
+
         tri = QPainterPath()
         tri.moveTo(cx, cy + s * 0.05)
         tri.lineTo(cx + s * 0.3, cy + s * 0.45)
         tri.lineTo(cx - s * 0.3, cy + s * 0.45)
         tri.closeSubpath()
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 230))
-        p.drawPath(tri)
+        # Fill the joined shapes once so the bottom edge meets the triangle without a seam.
+        p.fillPath(stroke.createStroke(screen).united(tri), QColor(255, 255, 255, 230))
 
     def _center_text(self, p, rect, title, sub):
         w = rect.width()
