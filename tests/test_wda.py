@@ -303,6 +303,22 @@ class WDAClientTests(unittest.TestCase):
         self.mock.status_value = {"ready": False}
         self.assertFalse(usb.wda_ready(self.mock.url))
 
+    def test_oversized_wda_response_closes_connection(self):
+        self.mock.status_value = {"ready": True, "padding": "x" * 1024}
+        with mock.patch("icast.control.wda.MAX_RESPONSE_BYTES", 128), mock.patch.object(self.mock.httpd, "handle_error"):
+            with self.assertRaisesRegex(WDAError, "size limit"):
+                self.wda.status()
+        self.assertIsNone(self.wda._conn)
+
+    def test_revoked_control_sends_no_more_http_commands(self):
+        revoked = threading.Event()
+        with WDA(self.mock.url, cancelled=revoked.is_set) as wda:
+            self.assertTrue(wda.status()["ready"])
+            revoked.set()
+            with self.assertRaisesRegex(WDAError, "session ended"):
+                wda.type_text("must not be sent")
+        self.assertFalse(self.mock.find("POST", "/wda/keys"))
+
 
 # ---------------------------------------------------------------------- Controller
 class FakeUsb:

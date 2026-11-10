@@ -11,12 +11,22 @@ WDA is always on 127.0.0.1 or on the local network.
 import http.client
 import json
 import logging
+import math
+import socket
 import threading
 import urllib.parse
+from contextlib import suppress
 
 log = logging.getLogger(__name__)
 
 INVALID_SESSION = "invalid session id"
+MAX_RESPONSE_BYTES = 256 * 1024
+
+
+def _expire_socket(sock, expired):
+    expired.set()
+    with suppress(OSError):
+        sock.shutdown(socket.SHUT_RDWR)
 
 # HID usage of the Home button (consumer page, "Menu"), for /wda/performIoHidEvent
 HID_PAGE_CONSUMER, HID_USAGE_HOME = 0x0C, 0x40
@@ -57,7 +67,7 @@ def describe_error(e):
 
 
 class WDA:
-    def __init__(self, base_url: str, timeout: float = 15):
+    def __init__(self, base_url: str, timeout: float = 15, *, cancelled=lambda: False):
         self.base = base_url.rstrip("/")
         url = urllib.parse.urlsplit(self.base)
         if url.scheme != "http" or not url.hostname:
@@ -66,6 +76,7 @@ class WDA:
         self._port = url.port or 80
         self._prefix = url.path.rstrip("/")
         self.timeout = timeout
+        self._cancelled = cancelled
         self.session_id = None
         self.size = None  # (width, height) in points
         self._conn = None
@@ -92,6 +103,8 @@ class WDA:
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
         with self._lock:
             for attempt in (1, 2):
+                if self._cancelled():
+                    raise WDAError("The mirror control session ended")
                 if self._conn is None:
                     self._conn = http.client.HTTPConnection(self._host, self._port, timeout=timeout)
                 conn = self._conn
@@ -99,19 +112,45 @@ class WDA:
                 conn.timeout = timeout
                 if conn.sock is not None:
                     conn.sock.settimeout(timeout)
+                expired = threading.Event()
+                timer = None
                 try:
+                    if conn.sock is None:
+                        conn.connect()
+                    if self._cancelled():
+                        raise WDAError("The mirror control session ended")
+                    timer = threading.Timer(timeout, _expire_socket, args=(conn.sock, expired))
+                    timer.daemon = True
+                    timer.start()
                     conn.request(method, self._prefix + path, body=data, headers=headers)
-                    resp = conn.getresponse()
-                    return resp.status, resp.read()
-                except (http.client.HTTPException, OSError) as e:
+                    with conn.getresponse() as resp:
+                        length = resp.length
+                        if length is not None and length > MAX_RESPONSE_BYTES:
+                            raise WDAError("WebDriverAgent response exceeds the size limit")
+                        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+                        if expired.is_set():
+                            raise TimeoutError("WebDriverAgent response deadline exceeded")
+                        if len(raw) > MAX_RESPONSE_BYTES:
+                            raise WDAError("WebDriverAgent response exceeds the size limit")
+                        if length is not None and len(raw) != length:
+                            raise WDAError("WebDriverAgent response is truncated")
+                        return resp.status, raw
+                except (WDAError, http.client.HTTPException, OSError) as e:
                     conn.close()
                     self._conn = None
+                    if expired.is_set():
+                        raise WDAError(f"{method} {path} -> timed out") from None
+                    if isinstance(e, WDAError):
+                        raise
                     # An idle keep-alive connection that the server already closed fails like
                     # this on first use: retry once on a fresh connection. Never retry timeouts.
                     stale = isinstance(e, (ConnectionError, http.client.BadStatusLine))
                     if attempt == 1 and reused and stale and not isinstance(e, TimeoutError):
                         continue
                     raise WDAError(f"{method} {path} -> {describe_error(e)}") from None
+                finally:
+                    if timer is not None:
+                        timer.cancel()
 
     def _request(self, method, path, body=None, timeout=None):
         if body is None and method == "POST":
@@ -120,7 +159,7 @@ class WDA:
         status, raw = self._send(method, path, data, timeout or self.timeout)
         try:
             payload = json.loads(raw or b"{}")
-        except ValueError:
+        except (ValueError, RecursionError):
             payload = {}
         if not isinstance(payload, dict):
             payload = {"value": payload}
@@ -129,15 +168,17 @@ class WDA:
             err = value.get("error") if isinstance(value, dict) else None
             msg = value.get("message") if isinstance(value, dict) else None
             text = f"{method} {path} -> HTTP {status}"
-            if err:
+            if isinstance(err, str) and err.isprintable() and len(err) <= 80:
                 text += f" {err}"
-            if msg:
-                text += ": " + str(msg).strip().splitlines()[0][:200]
+            else:
+                err = None
+            if isinstance(msg, str) and msg.strip():
+                text += ": " + msg.strip().splitlines()[0][:200]
             raise WDAError(text, status, err)
         legacy = payload.get("status")  # pre-W3C (JSONWP) WDA builds: HTTP 200 + non-zero status
         if isinstance(legacy, int) and not isinstance(legacy, bool) and legacy != 0:
             err = INVALID_SESSION if legacy == 6 else "unknown error"
-            raise WDAError(f"{method} {path} -> status {legacy}: {value}", status, err)
+            raise WDAError(f"{method} {path} -> status {legacy}", status, err)
         return payload
 
     def _session(self, method, path, body=None, timeout=None):
@@ -162,9 +203,11 @@ class WDA:
         caps = {"shouldWaitForQuiescence": False, "waitForIdleTimeout": 0}
         res = self._request("POST", "/session", {"capabilities": {"alwaysMatch": caps}})
         value = res.get("value") if isinstance(res.get("value"), dict) else {}
-        self.session_id = res.get("sessionId") or value.get("sessionId")
-        if not self.session_id:
-            raise WDAError("WebDriverAgent did not return a session id")
+        sid = res.get("sessionId") or value.get("sessionId")
+        if (not isinstance(sid, str) or not 1 <= len(sid) <= 128 or not sid.isascii()
+                or any(not c.isalnum() and c not in "._-" for c in sid)):
+            raise WDAError("WebDriverAgent did not return a valid session id")
+        self.session_id = sid
         try:  # make gestures snappy: do not wait for animations / idle
             self._request(
                 "POST",
@@ -182,7 +225,7 @@ class WDA:
             v = self._session("GET", "/window/size").get("value")
             v = v if isinstance(v, dict) else {}
             size = (float(v.get("width") or 0), float(v.get("height") or 0))
-            if not all(size):
+            if not all(math.isfinite(n) and 0 < n <= 16384 for n in size):
                 raise WDAError("could not read the screen size")
             self.size = size
         return self.size
